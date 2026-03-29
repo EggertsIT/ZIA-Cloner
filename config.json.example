@@ -1,0 +1,23 @@
+{
+  "tenant_a": {
+    "label": "Source Tenant",
+    "cloud": "zsapi.zscloud.net",
+    "username": "admin@your-company.com",
+    "password": "your-password",
+    "api_key": "your-api-key"
+  },
+  "tenant_b": {
+    "label": "Target Tenant",
+    "cloud": "zsapi.zscalertwo.net",
+    "username": "admin@your-company.com",
+    "password": "your-password",
+    "api_key": "your-api-key"
+  },
+  "sync": {
+    "dry_run_default": false,
+    "auto_activate": true,
+    "no_delete": false,
+    "schedule_cron": "",
+    "sync_sensitive": false
+  }
+}

@@ -1,0 +1,14 @@
+# Credentials — never commit
+config.json
+
+# Generated backup data — may contain sensitive tenant info
+backups/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# macOS
+.DS_Store
