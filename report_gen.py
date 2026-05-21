@@ -1,7 +1,9 @@
 """
-report_gen.py — HTML report generator.
+report_gen.py — HTML report generators.
 """
 import json
+import re
+import html as html_lib
 from datetime import datetime, timezone
 from pathlib import Path
 from resources import RESOURCES, WRITABLE_RESOURCES, READ_ONLY_RESOURCES, MIGRATION_ORDER
@@ -28,7 +30,228 @@ tr:hover td{background:#1c2128}
 .meta{color:#8b949e;font-size:.82em}
 pre{background:#0d1117;border:1px solid #21262d;border-radius:4px;
     padding:12px;overflow-x:auto;font-size:.82em;color:#a8d8a8}
+details.resource{background:#161b22;border:1px solid #21262d;border-radius:8px;
+      margin:12px 0}
+details.resource>summary{cursor:pointer;list-style:none;padding:14px 16px;
+      font-weight:700;color:#79c0ff}
+details.resource>summary::-webkit-details-marker{display:none}
+.resource-body{border-top:1px solid #21262d;padding:0 16px 16px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}
+.stat{background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:12px}
+.stat strong{display:block;color:#f0f6fc;font-size:1.4em}
+.nav a{display:inline-block;margin:2px 6px 2px 0}
+.pill{display:inline-block;border:1px solid #30363d;border-radius:12px;
+      padding:1px 8px;margin:1px 3px 1px 0;color:#8b949e;font-size:.78em}
+.json{white-space:pre-wrap;word-break:break-word}
+.redacted{color:#e3b341;font-style:italic}
+.errbox{border:1px solid #8b3a3a;background:#2d1117;color:#f85149;
+        border-radius:6px;padding:10px;margin:10px 0}
 """
+
+SECRET_FIELD_MARKERS = (
+    "password",
+    "passwd",
+    "secret",
+    "token",
+    "apikey",
+    "privatekey",
+    "presharedkey",
+    "passphrase",
+)
+
+
+def _esc(value) -> str:
+    return html_lib.escape("" if value is None else str(value), quote=True)
+
+
+def _slug(value: str) -> str:
+    slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", value.strip()).strip("-").lower()
+    return slug or "item"
+
+
+def _is_sensitive_field(field_name: str) -> bool:
+    normalised = re.sub(r"[^a-z0-9]+", "", field_name.lower())
+    return any(marker in normalised for marker in SECRET_FIELD_MARKERS)
+
+
+def _redact(value, field_name: str = ""):
+    if field_name and _is_sensitive_field(field_name):
+        return "<redacted>"
+    if isinstance(value, dict):
+        return {k: _redact(v, k) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redact(item, field_name) for item in value]
+    return value
+
+
+def _safe_json(value, field_name: str = "") -> str:
+    safe = _redact(value, field_name)
+    text = json.dumps(safe, indent=2, sort_keys=True, ensure_ascii=False, default=str)
+    return f'<pre class="json">{_esc(text)}</pre>'
+
+
+def _count(data) -> int:
+    if isinstance(data, list):
+        return len(data)
+    if isinstance(data, dict):
+        return 1 if data else 0
+    return 1 if data is not None else 0
+
+
+def _scalar(value) -> bool:
+    return value is None or isinstance(value, (str, int, float, bool))
+
+
+def _scalar_text(value) -> str:
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    if value is None:
+        return "null"
+    return str(value)
+
+
+def _preview(value, field_name: str = "", limit: int = 180) -> str:
+    safe = _redact(value, field_name)
+    if _scalar(safe):
+        text = _scalar_text(safe)
+    else:
+        text = json.dumps(safe, sort_keys=True, ensure_ascii=False, default=str)
+    if len(text) > limit:
+        text = text[:limit - 1] + "..."
+    css = "redacted" if text == "<redacted>" else "meta"
+    return f'<span class="{css}">{_esc(text)}</span>'
+
+
+def _display_name(resource_key: str, obj: dict) -> str:
+    meta = RESOURCES.get(resource_key, {})
+    for field in (meta.get("name_field"), "name", "configuredName",
+                  "loginName", "email", "id"):
+        if field and obj.get(field) not in (None, ""):
+            return str(obj[field])
+    return "unnamed"
+
+
+def _choose_columns(resource_key: str, items: list[dict]) -> list[str]:
+    meta = RESOURCES.get(resource_key, {})
+    preferred = [
+        meta.get("name_field"),
+        meta.get("id_field"),
+        "enabled",
+        "state",
+        "status",
+        "type",
+        "order",
+        "rank",
+        "action",
+        "description",
+    ]
+    columns = []
+    for field in preferred:
+        if (field and field not in columns and
+                any(isinstance(item, dict) and field in item for item in items[:20])):
+            columns.append(field)
+
+    for item in items[:20]:
+        if not isinstance(item, dict):
+            continue
+        for field, value in item.items():
+            if field not in columns and not _is_sensitive_field(field) and _scalar(value):
+                columns.append(field)
+            if len(columns) >= 8:
+                return columns
+    return columns[:8]
+
+
+def _render_object_table(obj: dict) -> str:
+    if not obj:
+        return '<p class="meta">Empty object returned.</p>'
+    rows = []
+    for key in sorted(obj):
+        value = obj[key]
+        if _scalar(value) or _is_sensitive_field(key):
+            rendered = _preview(value, key, 500)
+        else:
+            rendered = _safe_json(value, key)
+        rows.append(f"<tr><td><strong>{_esc(key)}</strong></td><td>{rendered}</td></tr>")
+    return "<table><tr><th>Field</th><th>Value</th></tr>" + "".join(rows) + "</table>"
+
+
+def _render_list(resource_key: str, items: list) -> str:
+    if not items:
+        return '<p class="meta">No items returned.</p>'
+
+    if not all(isinstance(item, dict) for item in items):
+        rows = [
+            f"<tr><td>{idx}</td><td>{_preview(item, limit=500)}</td></tr>"
+            for idx, item in enumerate(items, 1)
+        ]
+        return "<table><tr><th>#</th><th>Value</th></tr>" + "".join(rows) + "</table>"
+
+    columns = _choose_columns(resource_key, items)
+    header_cells = "".join(f"<th>{_esc(col)}</th>" for col in columns)
+    rows = []
+    for idx, item in enumerate(items, 1):
+        cells = [f"<td>{idx}</td>"]
+        for col in columns:
+            cells.append(f"<td>{_preview(item.get(col), col)}</td>")
+        name = _esc(_display_name(resource_key, item))
+        cells.append(
+            "<td><details>"
+            f"<summary>{name}</summary>{_safe_json(item)}"
+            "</details></td>"
+        )
+        rows.append("<tr>" + "".join(cells) + "</tr>")
+    return (
+        "<table><tr><th>#</th>"
+        f"{header_cells}<th>Full API object</th></tr>"
+        + "".join(rows) +
+        "</table>"
+    )
+
+
+def _render_resource_section(tenant_idx: int, resource_key: str,
+                             backup: dict) -> str:
+    meta = RESOURCES[resource_key]
+    data = backup.get("resources", {}).get(resource_key)
+    errors = backup.get("errors", {})
+    section_id = f"tenant-{tenant_idx}-{_slug(resource_key)}"
+    count = _count(data)
+    kind = meta.get("kind", "list")
+    writable = "writable" if meta.get("writable") else "read-only"
+    open_attr = " open" if resource_key in errors else ""
+
+    parts = [
+        f'<details class="resource" id="{section_id}"{open_attr}>',
+        "<summary>",
+        f"{_esc(resource_key)} "
+        f'<span class="badge {"d" if resource_key in errors else "ok"}">{count} item(s)</span>',
+        f'<span class="pill">{_esc(kind)}</span>',
+        f'<span class="pill">{_esc(writable)}</span>',
+        "</summary>",
+        '<div class="resource-body">',
+        f'<p class="meta">Endpoint: <code>{_esc(meta.get("endpoint", ""))}</code></p>',
+    ]
+    if meta.get("notes"):
+        parts.append(f'<p class="warn meta">{_esc(meta["notes"])}</p>')
+    if resource_key in errors:
+        parts.append(f'<div class="errbox">{_esc(errors[resource_key])}</div>')
+
+    if isinstance(data, list):
+        parts.append(_render_list(resource_key, data))
+    elif isinstance(data, dict):
+        parts.append(_render_object_table(data))
+        parts.append("<details><summary>Raw API object</summary>")
+        parts.append(_safe_json(data))
+        parts.append("</details>")
+    elif data is None:
+        parts.append('<p class="meta">No data was returned for this endpoint.</p>')
+    else:
+        parts.append(_preview(data, limit=1000))
+
+    parts.append("</div></details>")
+    return "\n".join(parts)
 
 
 def badge(text, cls):
@@ -204,6 +427,96 @@ def gen_report(diff: dict, src_backup: dict, result: dict | None,
 <div class="card">
 <pre>{"".join(f'{i+1:2}. {k}' + chr(10) for i,k in enumerate(MIGRATION_ORDER))}</pre>
 </div>
+</body></html>"""
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(html)
+    return out_path
+
+
+def gen_full_report(backups: list[dict] | dict, out_path: Path):
+    """Generate a full HTML inventory report from one or more tenant backups.
+
+    Unlike gen_report(), this is not a diff report. It renders every resource and
+    settings object present in the supplied backup data, including read-only
+    endpoints. Secret-looking fields are redacted in the HTML output only; the
+    underlying backup JSON files remain unchanged.
+    """
+    if isinstance(backups, dict):
+        backups = [backups]
+
+    generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    tenant_sections = []
+    tenant_nav = []
+    overview_rows = []
+
+    for tenant_idx, backup in enumerate(backups, 1):
+        meta = backup.get("meta", {})
+        label = meta.get("label") or f"Tenant {tenant_idx}"
+        timestamp = (meta.get("timestamp") or "?")[:19].replace("T", " ")
+        cloud = meta.get("cloud") or "?"
+        errors = backup.get("errors", {})
+        resources = backup.get("resources", {})
+        total_items = sum(_count(resources.get(key)) for key in RESOURCES)
+        fetched = sum(1 for key in RESOURCES if resources.get(key) is not None)
+        failed = len(errors)
+        failed_badge = badge(str(failed), "d") if failed else '<span class="zero">0</span>'
+        tenant_id = f"tenant-{tenant_idx}"
+
+        tenant_nav.append(f'<a href="#{tenant_id}">{_esc(label)}</a>')
+        overview_rows.append(
+            "<tr>"
+            f"<td><strong>{_esc(label)}</strong></td>"
+            f"<td class=\"meta\">{_esc(cloud)}</td>"
+            f"<td>{fetched}/{len(RESOURCES)}</td>"
+            f"<td>{total_items}</td>"
+            f"<td>{failed_badge}</td>"
+            f"<td class=\"meta\">{_esc(timestamp)}</td>"
+            "</tr>"
+        )
+
+        resource_links = []
+        resource_sections = []
+        for key in RESOURCES:
+            resource_links.append(
+                f'<a href="#tenant-{tenant_idx}-{_slug(key)}">{_esc(key)}</a>'
+            )
+            resource_sections.append(_render_resource_section(tenant_idx, key, backup))
+
+        tenant_sections.append(f"""
+<h2 id="{tenant_id}">{_esc(label)}</h2>
+<div class="card">
+  <div class="grid">
+    <div class="stat"><span class="meta">Fetched endpoints</span><strong>{fetched}/{len(RESOURCES)}</strong></div>
+    <div class="stat"><span class="meta">Objects/settings</span><strong>{total_items}</strong></div>
+    <div class="stat"><span class="meta">Backup errors</span><strong>{failed}</strong></div>
+  </div>
+  <p class="meta">Cloud: <code>{_esc(cloud)}</code> &nbsp;|&nbsp; Backup: {_esc(timestamp)}</p>
+  <p class="nav">{''.join(resource_links)}</p>
+</div>
+{''.join(resource_sections)}
+""")
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8">
+<title>ZIA Full API Report</title>
+<style>{CSS}</style>
+</head>
+<body>
+<h1>ZIA Full API Report</h1>
+<p class="meta">Generated: {generated}</p>
+
+<div class="card">
+  <p class="meta">This inventory report contains every resource returned by the configured ZIA API backup endpoints. Fields that look like passwords, tokens, API keys, private keys, or pre-shared keys are redacted in this HTML output.</p>
+  <p class="nav">{''.join(tenant_nav)}</p>
+  <table>
+    <tr><th>Tenant</th><th>Cloud</th><th>Fetched</th><th>Objects/settings</th><th>Errors</th><th>Backup time</th></tr>
+    {''.join(overview_rows)}
+  </table>
+</div>
+
+{''.join(tenant_sections)}
 </body></html>"""
 
     out_path.parent.mkdir(parents=True, exist_ok=True)

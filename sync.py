@@ -10,7 +10,8 @@ Usage (as a complete beginner):
     python3 sync.py --auto       # fully automatic, no prompts (for cron)
     python3 sync.py setup        # re-configure tenants
     python3 sync.py backup       # backup only (no sync)
-    python3 sync.py report       # open latest report in browser
+    python3 sync.py report       # open latest sync/diff report in browser
+    python3 sync.py full-report  # generate full API inventory report as HTML
     python3 sync.py schedule     # set up automatic sync
     python3 sync.py dry-run      # show what WOULD change, don't apply
 """
@@ -32,7 +33,7 @@ import ui
 from config_manager import load as load_config, is_configured, setup_wizard, CONFIG_PATH
 from zia_client import ZIAClient
 from engine import backup_tenant, compute_diff, has_changes, print_diff_summary, apply_diff
-from report_gen import gen_report
+from report_gen import gen_report, gen_full_report
 from resources import MIGRATION_ORDER
 
 BACKUPS_DIR = Path(__file__).parent / "backups"
@@ -40,6 +41,7 @@ BACKUP_A    = BACKUPS_DIR / "tenant_a.json"
 BACKUP_B    = BACKUPS_DIR / "tenant_b.json"
 DIFF_FILE   = BACKUPS_DIR / "diff.json"
 REPORT_FILE = BACKUPS_DIR / "report.html"
+FULL_REPORT_FILE = BACKUPS_DIR / "full_report.html"
 LOGS_DIR    = BACKUPS_DIR / "logs"
 
 
@@ -266,6 +268,39 @@ def cmd_report():
         ui.warn("No report found. Run a sync first.")
 
 
+def _normalise_tenant_selector(which: str) -> str:
+    """Normalise CLI tenant selectors for backup/report commands."""
+    aliases = {
+        "source": "a",
+        "tenant_a": "a",
+        "target": "b",
+        "tenant_b": "b",
+        "all": "both",
+    }
+    return aliases.get((which or "both").lower(), (which or "both").lower())
+
+
+def cmd_full_report(cfg: dict, which: str = "both"):
+    """Back up selected tenant(s) and generate a full HTML API inventory report."""
+    which = _normalise_tenant_selector(which)
+    if which not in ("a", "b", "both"):
+        ui.error("Use one of: a, b, source, target, both")
+        sys.exit(1)
+
+    ui.header("ZIA Full API Report")
+    cmd_backup(cfg, which)
+
+    backups = []
+    if which in ("a", "both"):
+        backups.append(json.loads(BACKUP_A.read_text()))
+    if which in ("b", "both"):
+        backups.append(json.loads(BACKUP_B.read_text()))
+
+    report_path = gen_full_report(backups, FULL_REPORT_FILE)
+    ui.ok(f"Full report → {report_path}")
+    open_report(report_path)
+
+
 def cmd_schedule():
     """Show the current cron schedule and offer to set up or remove automatic sync."""
     from scheduler import setup_schedule, show_schedule, remove_schedule
@@ -290,7 +325,8 @@ def main():
       setup     — Run the setup wizard to configure tenant credentials.
       backup    — Back up both tenants without syncing.
       dry-run   — Show what would change without applying anything.
-      report    — Open the latest HTML report in the browser.
+      report    — Open the latest sync/diff HTML report in the browser.
+      full-report [a|b|both] — Generate a full API inventory HTML report.
       schedule  — Set up or remove the automatic sync cron job.
       sync      — Full sync (default if no command is given).
       --auto    — Same as sync, with no confirmation prompt (for cron use).
@@ -329,6 +365,10 @@ def main():
 
     elif command == "report":
         cmd_report()
+
+    elif command in ("full-report", "inventory-report"):
+        which = args[1] if len(args) > 1 else "both"
+        cmd_full_report(cfg, which)
 
     elif command == "schedule":
         cmd_schedule()

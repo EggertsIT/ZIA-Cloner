@@ -56,7 +56,9 @@ Writes a cron job. After that, sync runs automatically in the background.
 
 ```bash
 python3 sync.py backup     # Backup both tenants without syncing
-python3 sync.py report     # Open the latest report in the browser
+python3 sync.py report     # Open the latest sync/diff report in the browser
+python3 sync.py full-report [a|b|both]
+                           # Generate a full API inventory report as HTML
 python3 sync.py --auto     # Full sync, no prompts (used by cron)
 ```
 
@@ -106,6 +108,19 @@ After every sync (or dry-run), an HTML report opens automatically showing:
 - Read-only resources that need manual attention
 - Full migration dependency order
 
+To create an inventory report containing the full data returned by all configured
+API backup endpoints, run:
+
+```bash
+python3 sync.py full-report       # source and target tenants
+python3 sync.py full-report a     # source tenant only
+python3 sync.py full-report b     # target tenant only
+```
+
+The inventory report is written to `backups/full_report.html`. Secret-looking
+fields such as passwords, tokens, API keys, private keys, and pre-shared keys are
+redacted in the HTML output.
+
 ---
 
 ## Files
@@ -118,7 +133,8 @@ backups/
   tenant_a.json      ← Latest backup of source tenant
   tenant_b.json      ← Latest backup of target tenant
   diff.json          ← Latest computed diff
-  report.html        ← Latest HTML report
+  report.html        ← Latest sync/diff HTML report
+  full_report.html   ← Latest full API inventory HTML report
   logs/              ← Per-sync JSON logs with full change history
 ```
 
