@@ -1,6 +1,7 @@
 # ZIA Sync Tool
 
-Synchronizes settings between two Zscaler Internet Access (ZIA) tenants.
+Synchronizes settings between two Zscaler Internet Access (ZIA) tenants, or
+generates a full single-tenant inventory report.
 Backup → Diff → Report → Apply — one command, no technical knowledge required.
 
 ---
@@ -22,21 +23,29 @@ Backup → Diff → Report → Apply — one command, no technical knowledge req
 python3 sync.py setup
 ```
 
-A wizard guides you through entering credentials for both tenants and tests the connection.
-Credentials are saved locally to `config.json`.
+A wizard asks whether you want report-only mode.
 
-### Step 2 — Run a sync
+- Report-only mode needs one tenant and generates HTML inventory reports.
+- Sync mode needs both source and target tenants and can migrate settings.
+
+The wizard tests the connection and saves credentials locally to `config.json`.
+
+### Step 2 — Run a sync or report
 
 ```bash
-python3 sync.py
+python3 sync.py              # sync mode: run a guarded sync
+python3 sync.py full-report  # report-only mode: generate inventory HTML
 ```
 
-The tool will:
+In sync mode, the tool will:
 1. Back up both tenants
 2. Compute the diff and show exactly what will change
 3. Ask for your confirmation
 4. Apply all changes to the target tenant
 5. Activate and open an HTML report in your browser
+
+In report-only mode, `python3 sync.py` also generates a full inventory report for
+the configured tenant.
 
 ### Step 3 — Preview without changing anything
 
@@ -55,7 +64,8 @@ Writes a cron job. After that, sync runs automatically in the background.
 ### Other commands
 
 ```bash
-python3 sync.py backup     # Backup both tenants without syncing
+python3 sync.py backup [a|b|both]
+                           # Backup configured tenant(s) without syncing
 python3 sync.py report     # Open the latest sync/diff report in the browser
 python3 sync.py full-report [a|b|both]
                            # Generate a full API inventory report as HTML
@@ -66,17 +76,20 @@ python3 sync.py --auto     # Full sync, no prompts (used by cron)
 
 ## What gets synced
 
-65 resource types are covered. 41 support full CRUD, 12 are settings objects (GET+PUT).
+141 resource definitions are covered. 41 support full CRUD, 12 are settings
+objects (GET+PUT), and 88 are report-only/read-only inventory endpoints.
 
 | Category | Resources |
 |----------|-----------|
 | **Rules & Labels** | Rule labels, URL filtering, Cloud firewall, Firewall DNS, Firewall IPS, NAT/DNAT, SSL inspection, Sandbox, Bandwidth control, File type control, DLP web rules, Cloud app control, CASB DLP, CASB Malware |
 | **Network Objects** | IP destination groups, IP source groups, Custom network services, Network service groups, Network application groups, Bandwidth classes, Custom file types |
-| **Traffic Forwarding** | Static IPs, VPN credentials, GRE tunnels, Locations, Location groups, PAC files, ZPA gateways, Forwarding rules |
-| **DLP** | Custom dictionaries, Custom engines, Notification templates |
+| **Traffic Forwarding** | Static IPs, VPN credentials, GRE tunnels, Locations, Location groups, PAC files, ZPA gateways, Forwarding rules, data centers, DC exclusions, extranets, IPv6 config, subclouds, dedicated IP gateways, VIP inventories |
+| **DLP** | Custom dictionaries, Custom engines, Notification templates, incident receivers, ICAP/IDM/EDM references, Cloud-to-Cloud IR, lite/all DLP inventories |
 | **URL** | Custom URL categories (incl. overrides in predefined categories) |
 | **Identity** | Users, Groups, Departments, Admin users, Alert subscriptions |
 | **Settings** | Auth settings, Advanced settings, Security policy, ATP, Malware protection, FTP control, Browser control, End user notification, Mobile threat protection |
+| **SaaS / Cloud Apps** | Cloud App Control rule types, cloud app policy/SSL policy apps, cloud app instances, risk profiles, tenancy restrictions, SaaS tenants, SaaS scan info, domain profiles, quarantine templates, email labels |
+| **Certificates / Policy Export** | Intermediate CA certificate inventory, ready-to-use certificates, per-certificate cert/CSR/public-key fetches, auth exempted URLs, raw policy export |
 | **Admin** | Cloud NSS feeds |
 
 > ⚠ **Secrets not exported:** VPN pre-shared keys and user/admin passwords are intentionally excluded for security. These must be re-entered manually after migration.
@@ -112,7 +125,7 @@ To create an inventory report containing the full data returned by all configure
 API backup endpoints, run:
 
 ```bash
-python3 sync.py full-report       # source and target tenants
+python3 sync.py full-report       # report-only: configured tenant; sync mode: both tenants
 python3 sync.py full-report a     # source tenant only
 python3 sync.py full-report b     # target tenant only
 ```
@@ -143,7 +156,7 @@ Internal modules (no need to touch these):
 ```
 zia_client.py        ← ZIA API client (auth, pagination, rate-limit retry)
 engine.py            ← Backup / diff / migrate logic
-resources.py         ← All 65 resource definitions with metadata
+resources.py         ← All 141 resource definitions with metadata
 config_manager.py    ← Setup wizard, config read/write
 scheduler.py         ← Cron integration
 report_gen.py        ← HTML report generator
@@ -156,8 +169,8 @@ ui.py                ← Terminal colors and prompts
 
 - Python 3.10 or later
 - No external packages — standard library only
-- Network access to both ZIA tenants
-- ZIA admin credentials + API key for both tenants
+- Network access to the configured ZIA tenant(s)
+- ZIA admin credentials + API key for each configured tenant
 
 ### How to get your ZIA API Key
 

@@ -21,6 +21,53 @@ SYSTEM_FIELDS = {
     "type",  # often computed
 }
 
+
+def report_only_resource(endpoint: str, *, id_field: str | None = "id",
+                         name_field: str | None = "name", notes: str = "",
+                         method: str = "GET", body=None, raw: bool = False,
+                         headers: dict | None = None) -> dict:
+    """Build a read-only inventory resource definition."""
+    resource = {
+        "endpoint": endpoint,
+        "kind": "readonly",
+        "writable": False,
+        "id_field": id_field,
+        "name_field": name_field,
+        "depends_on": [],
+        "skip_fields": set(),
+        "notes": notes,
+    }
+    if method != "GET":
+        resource["method"] = method
+    if body is not None:
+        resource["body"] = body
+    if raw:
+        resource["raw"] = True
+    if headers:
+        resource["headers"] = headers
+    return resource
+
+
+def report_child_resource(source_resource: str, endpoint_template: str, *,
+                          source_id_field: str = "id", name_field: str | None = "name",
+                          notes: str = "", raw: bool = False,
+                          headers: dict | None = None) -> dict:
+    """Build a read-only resource fetched once per object in another resource."""
+    resource = report_only_resource(
+        endpoint_template,
+        id_field="source_id",
+        name_field=name_field,
+        notes=notes,
+        raw=raw,
+        headers=headers,
+    )
+    resource["kind"] = "children"
+    resource["source_resource"] = source_resource
+    resource["source_id_field"] = source_id_field
+    resource["endpoint_template"] = endpoint_template
+    return resource
+
+
 RESOURCES: dict[str, dict] = {
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -721,8 +768,8 @@ RESOURCES: dict[str, dict] = {
         "endpoint": "cloudApplications/policy",
         "kind": "readonly",
         "writable": False,
-        "id_field": None,
-        "name_field": None,
+        "id_field": "id",
+        "name_field": "name",
         "depends_on": [],
         "skip_fields": set(),
         "notes": "Cloud application reference list — read-only, managed by Zscaler.",
@@ -741,12 +788,342 @@ RESOURCES: dict[str, dict] = {
         "endpoint": "vips",
         "kind": "readonly",
         "writable": False,
-        "id_field": None,
-        "name_field": None,
+        "id_field": "id",
+        "name_field": "vip",
         "depends_on": [],
         "skip_fields": set(),
         "notes": "Zscaler Virtual IP addresses — cloud-managed, read-only.",
     },
+    "dlp_dictionaries_all": report_only_resource(
+        "dlpDictionaries",
+        notes="Report-only: all custom and predefined DLP dictionaries.",
+    ),
+    "dlp_dictionaries_lite": report_only_resource(
+        "dlpDictionaries/lite",
+        notes="Report-only: lite DLP dictionary name/ID inventory.",
+    ),
+    "dlp_dictionary_predefined_identifiers": report_child_resource(
+        "dlp_dictionaries_all",
+        "dlpDictionaries/{id}/predefinedIdentifiers",
+        notes="Report-only: predefined hierarchical identifiers for each DLP dictionary where available.",
+    ),
+    "dlp_engines_all": report_only_resource(
+        "dlpEngines",
+        notes="Report-only: all custom and predefined DLP engines.",
+    ),
+    "dlp_engines_lite": report_only_resource(
+        "dlpEngines/lite",
+        notes="Report-only: lite DLP engine name/ID inventory.",
+    ),
+    "dlp_web_rules_lite": report_only_resource(
+        "webDlpRules/lite",
+        notes="Report-only: lite Web DLP rule inventory.",
+    ),
+    "dlp_icap_servers_lite": report_only_resource(
+        "icapServers/lite",
+        notes="Report-only: lite ICAP server inventory.",
+    ),
+    "dlp_incident_receivers": report_only_resource(
+        "incidentReceiverServers",
+        notes="Report-only: DLP incident receiver servers.",
+    ),
+    "dlp_incident_receivers_lite": report_only_resource(
+        "incidentReceiverServers/lite",
+        notes="Report-only: lite DLP incident receiver inventory.",
+    ),
+    "dlp_edm_schemas_lite": report_only_resource(
+        "dlpExactDataMatchSchemas/lite",
+        notes="Report-only: lite EDM schema inventory.",
+    ),
+    "cloud_to_cloud_incident_receivers": report_only_resource(
+        "cloudToCloudIR",
+        notes="Report-only: Cloud-to-Cloud incident receiver configurations.",
+    ),
+    "cloud_to_cloud_incident_receivers_lite": report_only_resource(
+        "cloudToCloudIR/lite",
+        notes="Report-only: lite Cloud-to-Cloud incident receiver inventory.",
+    ),
+    "cloud_to_cloud_incident_receivers_count": report_only_resource(
+        "cloudToCloudIR/count",
+        id_field=None,
+        name_field=None,
+        notes="Report-only: Cloud-to-Cloud incident receiver count.",
+    ),
+    "ip_destination_groups_lite": report_only_resource(
+        "ipDestinationGroups/lite",
+        notes="Report-only: lite destination IP group inventory.",
+    ),
+    "ip_destination_groups_ipv6": report_only_resource(
+        "ipDestinationGroups/ipv6DestinationGroups",
+        notes="Report-only: IPv6 destination IP groups.",
+    ),
+    "ip_destination_groups_ipv6_lite": report_only_resource(
+        "ipDestinationGroups/ipv6DestinationGroups/lite",
+        notes="Report-only: lite IPv6 destination IP group inventory.",
+    ),
+    "ip_source_groups_lite": report_only_resource(
+        "ipSourceGroups/lite",
+        notes="Report-only: lite source IP group inventory.",
+    ),
+    "ip_source_groups_ipv6": report_only_resource(
+        "ipSourceGroups/ipv6SourceGroups",
+        notes="Report-only: IPv6 source IP groups.",
+    ),
+    "ip_source_groups_ipv6_lite": report_only_resource(
+        "ipSourceGroups/ipv6SourceGroups/lite",
+        notes="Report-only: lite IPv6 source IP group inventory.",
+    ),
+    "network_applications": report_only_resource(
+        "networkApplications",
+        notes="Report-only: predefined cloud firewall network applications.",
+    ),
+    "network_services_lite": report_only_resource(
+        "networkServices/lite",
+        notes="Report-only: lite network services inventory.",
+    ),
+    "network_service_groups_lite": report_only_resource(
+        "networkServiceGroups/lite",
+        notes="Report-only: lite network service group inventory.",
+    ),
+    "time_windows": report_only_resource(
+        "timeWindows",
+        notes="Report-only: cloud firewall time windows.",
+    ),
+    "time_windows_lite": report_only_resource(
+        "timeWindows/lite",
+        notes="Report-only: lite cloud firewall time window inventory.",
+    ),
+    "dns_gateways": report_only_resource(
+        "dnsGateways",
+        notes="Report-only: DNS gateways for DNS control policy.",
+    ),
+    "datacenters": report_only_resource(
+        "datacenters",
+        notes="Report-only: Zscaler data centers used for traffic forwarding decisions.",
+    ),
+    "dc_exclusions": report_only_resource(
+        "dcExclusions",
+        notes="Report-only: tenant data center exclusions.",
+    ),
+    "extranets": report_only_resource(
+        "extranet",
+        notes="Report-only: traffic forwarding extranets.",
+    ),
+    "gre_available_internal_ip_ranges": report_only_resource(
+        "greTunnels/availableInternalIpRanges",
+        notes="Report-only: available GRE tunnel internal IP ranges. May require query parameters in some tenants.",
+    ),
+    "vips_recommended": report_only_resource(
+        "vips/recommendedList",
+        notes="Report-only: recommended GRE VIPs. May require source IP query parameters in some tenants.",
+    ),
+    "vips_grouped_by_datacenter": report_only_resource(
+        "vips/groupByDatacenter",
+        notes="Report-only: GRE VIPs grouped by data center. May require source IP query parameters in some tenants.",
+    ),
+    "ip_gre_tunnel_info": report_only_resource(
+        "orgProvisioning/ipGreTunnelInfo",
+        id_field=None,
+        name_field=None,
+        notes="Report-only: organization GRE tunnel provisioning information.",
+    ),
+    "ipv6_config": report_only_resource(
+        "ipv6config",
+        id_field=None,
+        name_field=None,
+        notes="Report-only: IPv6 traffic forwarding configuration.",
+    ),
+    "ipv6_dns64_prefixes": report_only_resource(
+        "ipv6config/dns64prefix",
+        notes="Report-only: DNS64 prefixes.",
+    ),
+    "ipv6_nat64_prefixes": report_only_resource(
+        "ipv6config/nat64prefix",
+        notes="Report-only: NAT64 prefixes.",
+    ),
+    "subclouds": report_only_resource(
+        "subclouds",
+        notes="Report-only: tenant subcloud inventory.",
+    ),
+    "dedicated_ip_gateways_lite": report_only_resource(
+        "dedicatedIPGateways/lite",
+        notes="Report-only: dedicated IP gateways.",
+    ),
+    "cloud_applications_ssl_policy": report_only_resource(
+        "cloudApplications/sslPolicy",
+        notes="Report-only: cloud applications associated with SSL inspection policy.",
+    ),
+    "cloud_app_control_rule_type_mapping": report_only_resource(
+        "webApplicationRules/ruleTypeMapping",
+        id_field=None,
+        name_field=None,
+        notes="Report-only: Cloud App Control rule type mapping.",
+    ),
+    "cloud_app_rules_webmail": report_only_resource(
+        "webApplicationRules/WEBMAIL",
+        notes="Report-only: Cloud App Control rules for Webmail.",
+    ),
+    "cloud_app_rules_streaming_media": report_only_resource(
+        "webApplicationRules/STREAMING_MEDIA",
+        notes="Report-only: Cloud App Control rules for Video Streaming.",
+    ),
+    "cloud_app_rules_finance": report_only_resource(
+        "webApplicationRules/FINANCE",
+        notes="Report-only: Cloud App Control rules for Finance.",
+    ),
+    "cloud_app_rules_legal": report_only_resource(
+        "webApplicationRules/LEGAL",
+        notes="Report-only: Cloud App Control rules for Legal.",
+    ),
+    "cloud_app_rules_ai_ml": report_only_resource(
+        "webApplicationRules/AI_ML",
+        notes="Report-only: Cloud App Control rules for AI and ML Applications.",
+    ),
+    "cloud_app_rules_human_resources": report_only_resource(
+        "webApplicationRules/HUMAN_RESOURCES",
+        notes="Report-only: Cloud App Control rules for Human Resources.",
+    ),
+    "cloud_app_rules_dns_over_https": report_only_resource(
+        "webApplicationRules/DNS_OVER_HTTPS",
+        notes="Report-only: Cloud App Control rules for DNS over HTTPS services.",
+    ),
+    "cloud_app_rules_system_and_development": report_only_resource(
+        "webApplicationRules/SYSTEM_AND_DEVELOPMENT",
+        notes="Report-only: Cloud App Control rules for System and Development.",
+    ),
+    "cloud_app_rules_instant_messaging": report_only_resource(
+        "webApplicationRules/INSTANT_MESSAGING",
+        notes="Report-only: Cloud App Control rules for Instant Messaging.",
+    ),
+    "cloud_app_rules_health_care": report_only_resource(
+        "webApplicationRules/HEALTH_CARE",
+        notes="Report-only: Cloud App Control rules for Health Care.",
+    ),
+    "cloud_app_rules_file_share": report_only_resource(
+        "webApplicationRules/FILE_SHARE",
+        notes="Report-only: Cloud App Control rules for File Sharing.",
+    ),
+    "cloud_app_rules_consumer": report_only_resource(
+        "webApplicationRules/CONSUMER",
+        notes="Report-only: Cloud App Control rules for Consumer applications.",
+    ),
+    "cloud_app_rules_hosting_provider": report_only_resource(
+        "webApplicationRules/HOSTING_PROVIDER",
+        notes="Report-only: Cloud App Control rules for Hosting Providers.",
+    ),
+    "cloud_app_rules_enterprise_collaboration": report_only_resource(
+        "webApplicationRules/ENTERPRISE_COLLABORATION",
+        notes="Report-only: Cloud App Control rules for Collaboration and Online Meetings.",
+    ),
+    "cloud_app_rules_custom_capp": report_only_resource(
+        "webApplicationRules/CUSTOM_CAPP",
+        notes="Report-only: Cloud App Control rules for Custom Applications.",
+    ),
+    "cloud_app_rules_sales_and_marketing": report_only_resource(
+        "webApplicationRules/SALES_AND_MARKETING",
+        notes="Report-only: Cloud App Control rules for Sales and Marketing.",
+    ),
+    "cloud_app_rules_it_services": report_only_resource(
+        "webApplicationRules/IT_SERVICES",
+        notes="Report-only: Cloud App Control rules for IT Services.",
+    ),
+    "cloud_app_rules_business_productivity": report_only_resource(
+        "webApplicationRules/BUSINESS_PRODUCTIVITY",
+        notes="Report-only: Cloud App Control rules for Productivity and CRM Tools.",
+    ),
+    "cloud_application_instances": report_only_resource(
+        "cloudApplicationInstances",
+        notes="Report-only: cloud application instances.",
+    ),
+    "cloud_application_risk_profiles": report_only_resource(
+        "riskProfiles",
+        notes="Report-only: cloud application risk profiles.",
+    ),
+    "cloud_application_risk_profiles_lite": report_only_resource(
+        "riskProfiles/lite",
+        notes="Report-only: lite cloud application risk profile inventory.",
+    ),
+    "tenancy_restriction_profiles": report_only_resource(
+        "tenancyRestrictionProfile",
+        notes="Report-only: tenancy restriction profiles.",
+    ),
+    "saas_domain_profiles_lite": report_only_resource(
+        "domainProfiles/lite",
+        notes="Report-only: SaaS Security API domain profile summaries.",
+    ),
+    "saas_quarantine_tombstone_templates_lite": report_only_resource(
+        "quarantineTombstoneTemplate/lite",
+        notes="Report-only: SaaS quarantine tombstone file templates.",
+    ),
+    "saas_email_labels_lite": report_only_resource(
+        "casbEmailLabel/lite",
+        notes="Report-only: SaaS Security API email labels.",
+    ),
+    "saas_tenants_lite": report_only_resource(
+        "casbTenant/lite",
+        notes="Report-only: SaaS application tenants.",
+    ),
+    "saas_tenant_scan_info": report_only_resource(
+        "casbTenant/scanInfo",
+        notes="Report-only: SaaS application tenant scan information.",
+    ),
+    "casb_dlp_rules_all": report_only_resource(
+        "casbDlpRules/all",
+        notes="Report-only: all CASB DLP rules across rule types.",
+    ),
+    "intermediate_certificates_lite": report_only_resource(
+        "intermediateCaCertificate/lite",
+        notes="Report-only: lite intermediate CA certificate inventory.",
+    ),
+    "intermediate_certificates_ready_to_use": report_only_resource(
+        "intermediateCaCertificate/readyToUse",
+        notes="Report-only: intermediate CA certificates ready for SSL inspection.",
+    ),
+    "intermediate_certificate_details": report_child_resource(
+        "intermediate_certificates",
+        "intermediateCaCertificate/{id}",
+        notes="Report-only: per-certificate intermediate CA details.",
+    ),
+    "intermediate_certificate_show_cert": report_child_resource(
+        "intermediate_certificates",
+        "intermediateCaCertificate/showCert/{id}",
+        raw=True,
+        notes="Report-only: signed intermediate CA certificate data for each certificate where available.",
+    ),
+    "intermediate_certificate_show_csr": report_child_resource(
+        "intermediate_certificates",
+        "intermediateCaCertificate/showCsr/{id}",
+        raw=True,
+        notes="Report-only: CSR data for each intermediate CA certificate where available.",
+    ),
+    "intermediate_certificate_download_csr": report_child_resource(
+        "intermediate_certificates",
+        "intermediateCaCertificate/downloadCsr/{id}",
+        raw=True,
+        headers={"Accept": "application/octet-stream"},
+        notes="Report-only: downloadable CSR content for each certificate where available.",
+    ),
+    "intermediate_certificate_download_public_key": report_child_resource(
+        "intermediate_certificates",
+        "intermediateCaCertificate/downloadPublicKey/{id}",
+        raw=True,
+        headers={"Accept": "application/octet-stream"},
+        notes="Report-only: downloadable HSM public key content for each certificate where available.",
+    ),
+    "auth_exempted_urls": report_only_resource(
+        "authSettings/exemptedUrls",
+        notes="Report-only: authentication/SSL inspection exempted URLs.",
+    ),
+    "policy_export": report_only_resource(
+        "exportPolicies",
+        id_field=None,
+        name_field=None,
+        method="POST",
+        body=[],
+        raw=True,
+        headers={"Accept": "application/octet-stream"},
+        notes="Report-only: raw ZIA policy export. The API returns ZIP/JSON content, which is extracted into the backup where possible.",
+    ),
     "subscription": {
         "endpoint": "subscriptions",
         "kind": "readonly",

@@ -4,7 +4,11 @@ engine.py — Core sync logic: backup, diff, migrate. Called by sync.py.
 import json
 import copy
 import time
+import base64
+import hashlib
+import zipfile
 from datetime import datetime, timezone
+from io import BytesIO
 from pathlib import Path
 
 import ui
@@ -16,19 +20,124 @@ from resources import (RESOURCES, MIGRATION_ORDER, WRITABLE_RESOURCES,
 BACKUPS_DIR = Path(__file__).parent / "backups"
 
 
+def _decode_bytes_payload(content: bytes) -> dict:
+    """Return a JSON-serialisable representation of raw API response bytes."""
+    result = {
+        "size_bytes": len(content),
+        "sha256": hashlib.sha256(content).hexdigest(),
+    }
+
+    if not content:
+        result["content"] = None
+        return result
+
+    payload = BytesIO(content)
+    if zipfile.is_zipfile(payload):
+        payload.seek(0)
+        entries = []
+        with zipfile.ZipFile(payload) as zf:
+            for info in zf.infolist():
+                item_bytes = zf.read(info)
+                entry = {
+                    "filename": info.filename,
+                    "size_bytes": info.file_size,
+                    "compressed_size_bytes": info.compress_size,
+                    "sha256": hashlib.sha256(item_bytes).hexdigest(),
+                }
+                decoded = _decode_bytes_payload(item_bytes)
+                if "zip_entries" in decoded:
+                    entry["zip_entries"] = decoded["zip_entries"]
+                elif "json" in decoded:
+                    entry["json"] = decoded["json"]
+                elif "text" in decoded:
+                    entry["text"] = decoded["text"]
+                elif "base64" in decoded:
+                    entry["base64"] = decoded["base64"]
+                entries.append(entry)
+        result["zip_entries"] = entries
+        return result
+
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        result["base64"] = base64.b64encode(content).decode("ascii")
+        return result
+
+    try:
+        result["json"] = json.loads(text)
+    except json.JSONDecodeError:
+        result["text"] = text
+    return result
+
+
+def _decode_raw_api_response(response: dict) -> dict:
+    """Normalise raw API responses so they can be saved in backup JSON."""
+    headers = response.get("headers", {})
+    body = response.get("body") or b""
+    decoded = _decode_bytes_payload(body)
+    decoded.update({
+        "status": response.get("status"),
+        "content_type": headers.get("Content-Type") or headers.get("content-type"),
+        "content_disposition": headers.get("Content-Disposition") or headers.get("content-disposition"),
+    })
+    return decoded
+
+
+def _fetch_child_resource(client: ZIAClient, meta: dict, result: dict) -> list:
+    """Fetch a report-only endpoint once for each item in another resource."""
+    source_key = meta["source_resource"]
+    source_items = result.get("resources", {}).get(source_key) or []
+    if isinstance(source_items, dict):
+        source_items = [source_items]
+    if not isinstance(source_items, list):
+        return []
+
+    id_field = meta.get("source_id_field", "id")
+    name_field = meta.get("name_field") or "name"
+    endpoint_template = meta["endpoint_template"]
+    children = []
+
+    for item in source_items:
+        if not isinstance(item, dict) or item.get(id_field) in (None, ""):
+            continue
+        source_id = item[id_field]
+        endpoint = endpoint_template.format(id=source_id)
+        child = {
+            "source_id": source_id,
+            "source_name": item.get(name_field) or item.get("name") or item.get("configuredName"),
+            "endpoint": endpoint,
+        }
+        try:
+            if meta.get("raw"):
+                child["data"] = _decode_raw_api_response(client.get_raw(
+                    endpoint,
+                    headers=meta.get("headers", {}),
+                ))
+            else:
+                child["data"] = client.get(endpoint)
+        except Exception as exc:
+            child["error"] = str(exc)
+        children.append(child)
+        time.sleep(0.2)
+
+    return children
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Backup
 # ─────────────────────────────────────────────────────────────────────────────
 
 def backup_tenant(client: ZIAClient, label: str, out_path: Path) -> dict:
-    """Download all 65 ZIA resources from a tenant and save them to a JSON file.
+    """Download all configured ZIA resources from a tenant and save them to JSON.
 
     Iterates through every resource defined in RESOURCES in order, using a 0.4s
     delay between requests to stay within ZIA's rate limits. Resources with kind
     "settings" or "readonly" without an id_field are fetched as single objects via
     get(); everything else is fetched with get_paginated(). If pagination returns
     nothing, the function falls back to a plain get() in case the endpoint returns
-    a single object rather than a list.
+    a single object rather than a list. Resources with method="POST" are fetched
+    with the configured request body; raw responses are decoded into JSON-safe
+    metadata and extracted ZIP/JSON/text content where possible.
 
     Errors per resource are caught individually and stored in result["errors"] so
     that a single failed endpoint does not abort the entire backup.
@@ -59,7 +168,20 @@ def backup_tenant(client: ZIAClient, label: str, out_path: Path) -> dict:
         time.sleep(0.4)  # avoid rate limiting (ZIA: 1-2 req/sec on some endpoints)
         try:
             kind = meta.get("kind", "list")
-            if kind == "settings" or kind == "readonly" and not meta.get("id_field"):
+            method = meta.get("method", "GET").upper()
+            if kind == "children":
+                data = _fetch_child_resource(client, meta, result)
+            elif method == "POST" and meta.get("raw"):
+                data = _decode_raw_api_response(client.post_raw(
+                    meta["endpoint"],
+                    meta.get("body"),
+                    headers=meta.get("headers", {}),
+                ))
+            elif method == "POST":
+                data = client.post(meta["endpoint"], meta.get("body", {}))
+            elif method != "GET":
+                raise RuntimeError(f"Unsupported resource method: {method}")
+            elif kind == "settings" or kind == "readonly" and not meta.get("id_field"):
                 # Single-object endpoint
                 data = client.get(meta["endpoint"])
             else:

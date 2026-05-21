@@ -129,6 +129,36 @@ class ZIAClient:
                 return self._request(method, path, body, _retries - 1)
             raise RuntimeError(f"HTTP {e.code} on {method} {path}: {body_txt[:400]}")
 
+    def _request_raw(self, method: str, path: str, body=None, headers: dict | None = None,
+                     _retries: int = 3) -> dict:
+        """Send an authenticated request and return status, headers, and raw bytes.
+
+        This is used for endpoints such as policy export that return a ZIP or other
+        non-JSON payload instead of normal API JSON.
+        """
+        if not self._authenticated:
+            self.authenticate()
+        url = f"{self.base}/{path.lstrip('/')}"
+        data = json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(url, data=data, method=method)
+        req.add_header("Content-Type", "application/json")
+        for name, value in (headers or {}).items():
+            req.add_header(name, value)
+        try:
+            with self.opener.open(req) as r:
+                return {
+                    "status": getattr(r, "status", None),
+                    "headers": dict(r.headers.items()),
+                    "body": r.read(),
+                }
+        except urllib.error.HTTPError as e:
+            body_txt = e.read().decode(errors="replace")
+            if e.code == 429 and _retries > 0:
+                wait = 2 ** (4 - _retries)
+                time.sleep(wait)
+                return self._request_raw(method, path, body, headers, _retries - 1)
+            raise RuntimeError(f"HTTP {e.code} on {method} {path}: {body_txt[:400]}")
+
     def get(self, path: str, params: dict = None) -> dict | list | None:
         """Send a GET request, optionally appending query parameters.
 
@@ -139,12 +169,20 @@ class ZIAClient:
             path = f"{path}?{urllib.parse.urlencode(params)}"
         return self._request("GET", path)
 
+    def get_raw(self, path: str, headers: dict | None = None) -> dict:
+        """Send a GET request and return raw response bytes plus metadata."""
+        return self._request_raw("GET", path, headers=headers)
+
     def post(self, path: str, body: dict) -> dict | None:
         """Send a POST request to create a new resource.
 
         Returns the created object (including the server-assigned ID), or None.
         """
         return self._request("POST", path, body)
+
+    def post_raw(self, path: str, body=None, headers: dict | None = None) -> dict:
+        """Send a POST request and return raw response bytes plus metadata."""
+        return self._request_raw("POST", path, body, headers=headers)
 
     def put(self, path: str, body: dict) -> dict | None:
         """Send a PUT request to update an existing resource or settings object.

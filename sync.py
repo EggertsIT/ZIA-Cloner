@@ -8,7 +8,7 @@ Usage (as a complete beginner):
 
     python3 sync.py              # guided sync (asks before applying)
     python3 sync.py --auto       # fully automatic, no prompts (for cron)
-    python3 sync.py setup        # re-configure tenants
+    python3 sync.py setup        # configure report-only or sync mode
     python3 sync.py backup       # backup only (no sync)
     python3 sync.py report       # open latest sync/diff report in browser
     python3 sync.py full-report  # generate full API inventory report as HTML
@@ -30,7 +30,14 @@ except ImportError:
     sys.exit(1)
 
 import ui
-from config_manager import load as load_config, is_configured, setup_wizard, CONFIG_PATH
+from config_manager import (
+    load as load_config,
+    is_configured,
+    is_report_only,
+    setup_wizard,
+    tenant_configured,
+    CONFIG_PATH,
+)
 from zia_client import ZIAClient
 from engine import backup_tenant, compute_diff, has_changes, print_diff_summary, apply_diff
 from report_gen import gen_report, gen_full_report
@@ -47,6 +54,10 @@ LOGS_DIR    = BACKUPS_DIR / "logs"
 
 def make_client(tenant_cfg: dict) -> ZIAClient:
     """Construct a ZIAClient from a tenant config dict (as stored in config.json)."""
+    missing = [field for field in ("cloud", "username", "password", "api_key")
+               if not tenant_cfg.get(field)]
+    if missing:
+        raise ValueError(f"Tenant config is missing: {', '.join(missing)}")
     return ZIAClient(
         tenant_cfg["cloud"],
         tenant_cfg["username"],
@@ -87,6 +98,14 @@ def save_log(content: dict):
     return log_path
 
 
+def require_two_tenants(cfg: dict, command_name: str):
+    """Exit with a clear message if a sync command is used in report-only mode."""
+    if is_report_only(cfg) or not tenant_configured(cfg, "tenant_b"):
+        ui.error(f"{command_name} requires a target tenant.")
+        ui.info("Run `python3 sync.py setup` again and choose sync mode to add tenant B.")
+        sys.exit(1)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Commands
 # ─────────────────────────────────────────────────────────────────────────────
@@ -107,6 +126,17 @@ def cmd_backup(cfg: dict, which: str = "both"):
         cfg:   Full config dict from config.json.
         which: 'a' for source only, 'b' for target only, 'both' for both (default).
     """
+    which = _normalise_tenant_selector(which)
+    if which == "both" and is_report_only(cfg):
+        which = "a"
+    if which not in ("a", "b", "both"):
+        ui.error("Use one of: a, b, source, target, both")
+        sys.exit(1)
+    if which in ("b", "both") and not tenant_configured(cfg, "tenant_b"):
+        ui.error("No target tenant is configured.")
+        ui.info("Run `python3 sync.py setup` and choose sync mode to add tenant B.")
+        sys.exit(1)
+
     if which in ("a", "both"):
         client_a = make_client(cfg["tenant_a"])
         try:
@@ -132,6 +162,7 @@ def cmd_dry_run(cfg: dict):
     so the user can review exactly what would happen before committing.
     """
     ui.header("ZIA Sync — Dry Run")
+    require_two_tenants(cfg, "dry-run")
 
     cmd_backup(cfg, "both")
 
@@ -179,6 +210,7 @@ def cmd_sync(cfg: dict, auto: bool = False):
         auto: If True, skip the confirmation prompt (used by cron / --auto flag).
     """
     ui.header("ZIA Sync")
+    require_two_tenants(cfg, "sync")
     print(f"\n  {ui._c(ui.DIM, 'Source:')} {cfg['tenant_a']['label']} "
           f"{ui._c(ui.DIM, '→')} "
           f"{ui._c(ui.DIM, 'Target:')} {cfg['tenant_b']['label']}\n")
@@ -280,9 +312,11 @@ def _normalise_tenant_selector(which: str) -> str:
     return aliases.get((which or "both").lower(), (which or "both").lower())
 
 
-def cmd_full_report(cfg: dict, which: str = "both"):
+def cmd_full_report(cfg: dict, which: str = "both", open_browser: bool = True):
     """Back up selected tenant(s) and generate a full HTML API inventory report."""
     which = _normalise_tenant_selector(which)
+    if which == "both" and is_report_only(cfg):
+        which = "a"
     if which not in ("a", "b", "both"):
         ui.error("Use one of: a, b, source, target, both")
         sys.exit(1)
@@ -298,7 +332,8 @@ def cmd_full_report(cfg: dict, which: str = "both"):
 
     report_path = gen_full_report(backups, FULL_REPORT_FILE)
     ui.ok(f"Full report → {report_path}")
-    open_report(report_path)
+    if open_browser:
+        open_report(report_path)
 
 
 def cmd_schedule():
@@ -322,8 +357,8 @@ def main():
     """Parse command-line arguments and dispatch to the appropriate command function.
 
     Available commands (first positional argument):
-      setup     — Run the setup wizard to configure tenant credentials.
-      backup    — Back up both tenants without syncing.
+      setup     — Run the setup wizard to configure report-only or sync mode.
+      backup [a|b|both] — Back up configured tenant(s) without syncing.
       dry-run   — Show what would change without applying anything.
       report    — Open the latest sync/diff HTML report in the browser.
       full-report [a|b|both] — Generate a full API inventory HTML report.
@@ -357,7 +392,8 @@ def main():
         if not cfg:
             ui.error("Not configured. Run: python3 sync.py setup")
             sys.exit(1)
-        cmd_backup(cfg, "both")
+        which = args[1] if len(args) > 1 else "both"
+        cmd_backup(cfg, which)
         ui.ok("Backup complete.")
 
     elif command == "dry-run":
@@ -371,10 +407,15 @@ def main():
         cmd_full_report(cfg, which)
 
     elif command == "schedule":
+        require_two_tenants(cfg, "schedule")
         cmd_schedule()
 
     elif command in ("sync", "--auto"):
-        cmd_sync(cfg, auto=auto)
+        if is_report_only(cfg):
+            ui.info("Report-only config detected; generating a full inventory report.")
+            cmd_full_report(cfg, "a", open_browser=not auto)
+        else:
+            cmd_sync(cfg, auto=auto)
 
     else:
         print(__doc__)

@@ -231,7 +231,7 @@ def _render_resource_section(tenant_idx: int, resource_key: str,
         f'<span class="pill">{_esc(writable)}</span>',
         "</summary>",
         '<div class="resource-body">',
-        f'<p class="meta">Endpoint: <code>{_esc(meta.get("endpoint", ""))}</code></p>',
+        f'<p class="meta">Endpoint: <code>{_esc(meta.get("method", "GET"))} {_esc(meta.get("endpoint", ""))}</code></p>',
     ]
     if meta.get("notes"):
         parts.append(f'<p class="warn meta">{_esc(meta["notes"])}</p>')
