@@ -1,7 +1,9 @@
 # ZIA Sync Tool
 
 Synchronizes settings between two Zscaler Internet Access (ZIA) tenants, or
-generates a full single-tenant inventory report.
+generates a full single-tenant inventory report. New setups use OneAPI
+OAuth/Zidentity by default, with legacy ZIA API key authentication still
+available for tenants that have not moved to Zidentity.
 Backup → Diff → Report → Apply — one command, no technical knowledge required.
 
 ---
@@ -23,10 +25,13 @@ Backup → Diff → Report → Apply — one command, no technical knowledge req
 python3 sync.py setup
 ```
 
-A wizard asks whether you want report-only mode.
+A wizard asks whether you want report-only mode and which authentication mode to
+use.
 
 - Report-only mode needs one tenant and generates HTML inventory reports.
 - Sync mode needs both source and target tenants and can migrate settings.
+- OneAPI mode needs a Zidentity API Client ID, client secret, and vanity domain.
+- Legacy mode needs the old ZIA admin username, password, API key, and cloud.
 
 The wizard tests the connection and saves credentials locally to `config.json`.
 
@@ -154,7 +159,7 @@ backups/
 Internal modules (no need to touch these):
 
 ```
-zia_client.py        ← ZIA API client (auth, pagination, rate-limit retry)
+zia_client.py        ← ZIA API client (OneAPI/legacy auth, pagination, rate-limit retry)
 engine.py            ← Backup / diff / migrate logic
 resources.py         ← All 141 resource definitions with metadata
 config_manager.py    ← Setup wizard, config read/write
@@ -170,9 +175,35 @@ ui.py                ← Terminal colors and prompts
 - Python 3.10 or later
 - No external packages — standard library only
 - Network access to the configured ZIA tenant(s)
-- ZIA admin credentials + API key for each configured tenant
+- OneAPI/Zidentity API Client credentials for each configured tenant, or legacy
+  ZIA admin credentials + API key when legacy auth is selected
 
-### How to get your ZIA API Key
+### OneAPI Authentication
+
+Create an API role/client in Zidentity, following Zscaler's
+[OneAPI getting started guide](https://automate.zscaler.com/docs/getting-started/getting-started),
+then run:
+
+```bash
+python3 sync.py setup
+```
+
+Choose OneAPI when prompted and enter:
+
+- Client ID
+- Client secret
+- Vanity domain, for example `acme` from `https://acme.zslogin.net`
+- Optional cloud name, for example `production` or `beta`
+- Optional partner ID
+
+This implementation uses OneAPI client-secret OAuth and sends API calls to the
+OneAPI ZIA path (`/zia/api/v1`). Private-key JWT auth is not implemented because
+the tool intentionally has no external Python dependencies.
+
+### Legacy ZIA API Key
+
+If your tenant is not on Zidentity/OneAPI, choose legacy authentication in the
+setup wizard.
 
 Admin Portal → Administration → API Key Management → Add API Key
 

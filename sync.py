@@ -36,6 +36,7 @@ from config_manager import (
     is_report_only,
     setup_wizard,
     tenant_configured,
+    missing_auth_fields,
     CONFIG_PATH,
 )
 from zia_client import ZIAClient
@@ -54,16 +55,10 @@ LOGS_DIR    = BACKUPS_DIR / "logs"
 
 def make_client(tenant_cfg: dict) -> ZIAClient:
     """Construct a ZIAClient from a tenant config dict (as stored in config.json)."""
-    missing = [field for field in ("cloud", "username", "password", "api_key")
-               if not tenant_cfg.get(field)]
+    missing = missing_auth_fields(tenant_cfg)
     if missing:
         raise ValueError(f"Tenant config is missing: {', '.join(missing)}")
-    return ZIAClient(
-        tenant_cfg["cloud"],
-        tenant_cfg["username"],
-        tenant_cfg["password"],
-        tenant_cfg["api_key"],
-    )
+    return ZIAClient.from_config(tenant_cfg)
 
 
 def open_report(path: Path):

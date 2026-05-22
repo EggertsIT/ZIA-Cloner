@@ -1,12 +1,17 @@
 """
-ZIA API Client — session-based auth with cookie, pagination support.
+ZIA API Client — OneAPI OAuth or legacy session auth with pagination support.
 """
 
-import urllib.request
-import urllib.parse
 import json
 import time
 import http.cookiejar
+import urllib.error
+import urllib.parse
+import urllib.request
+
+
+AUTH_MODE_LEGACY = "legacy"
+AUTH_MODE_ONEAPI = "oneapi"
 
 
 def obfuscate_api_key(api_key: str, timestamp: int) -> str:
@@ -35,30 +40,147 @@ def obfuscate_api_key(api_key: str, timestamp: int) -> str:
     return key
 
 
+def _clean_vanity_domain(vanity_domain: str) -> str:
+    """Accept a bare vanity domain or a pasted zslogin URL and return the name."""
+    value = (vanity_domain or "").strip().lower()
+    value = value.removeprefix("https://").removeprefix("http://").strip("/")
+    for suffix in (
+        ".zslogin.net",
+        ".zsloginbeta.net",
+        ".zsloginalpha.net",
+        ".zsloginzscalerbeta.net",
+    ):
+        if value.endswith(suffix):
+            return value[: -len(suffix)]
+    return value.split(".zslogin", 1)[0] if ".zslogin" in value else value
+
+
+def _normalise_oneapi_cloud(cloud: str) -> str:
+    """Normalise optional OneAPI cloud input to the SDK-style cloud name."""
+    value = (cloud or "").strip().lower()
+    value = value.removeprefix("https://").removeprefix("http://").strip("/")
+    if value in ("", "default", "prod", "production", "api.zsapi.net"):
+        return "production"
+    if value.startswith("api.") and value.endswith(".zsapi.net"):
+        return value[len("api.") : -len(".zsapi.net")]
+    if value.startswith("zsapi.") and value.endswith(".net"):
+        return value[len("zsapi.") : -len(".net")]
+    return value
+
+
+def _oneapi_api_base(cloud: str) -> str:
+    """Return the OneAPI ZIA v1 base URL for the selected cloud."""
+    root = "https://api.zsapi.net"
+    if cloud and cloud != "production":
+        root = f"https://api.{cloud}.zsapi.net"
+    return f"{root}/zia/api/v1"
+
+
+def _oneapi_token_url(vanity_domain: str, cloud: str) -> str:
+    """Return the Zidentity OAuth token endpoint for the selected cloud."""
+    if cloud == "production":
+        return f"https://{vanity_domain}.zslogin.net/oauth2/v1/token"
+    return f"https://{vanity_domain}.zslogin{cloud}.net/oauth2/v1/token"
+
+
+def _config_value(tenant_cfg: dict, *names: str) -> str:
+    """Read snake_case or SDK-style camelCase config values."""
+    for name in names:
+        value = tenant_cfg.get(name)
+        if value:
+            return value
+    return ""
+
+
 class ZIAClient:
-    def __init__(self, cloud: str, username: str, password: str, api_key: str):
+    def __init__(
+        self,
+        cloud: str = "",
+        username: str = "",
+        password: str = "",
+        api_key: str = "",
+        *,
+        auth_mode: str = AUTH_MODE_LEGACY,
+        client_id: str = "",
+        client_secret: str = "",
+        vanity_domain: str = "",
+        oneapi_cloud: str = "",
+        partner_id: str = "",
+    ):
         """Initialise the client for a single ZIA tenant.
 
         Does NOT authenticate immediately — call authenticate() before making
         any API requests, or use the client as a context manager.
 
         Args:
-            cloud:    Tenant API hostname, e.g. 'zsapi.zscloud.net'.
-            username: Admin email address, e.g. 'admin@company.com'.
-            password: Admin password (plain text — stored in memory only).
-            api_key:  API key from ZIA Admin Portal → API Key Management.
+            cloud:         Legacy tenant API hostname, e.g. 'zsapi.zscloud.net'.
+            username:      Legacy admin email address, e.g. 'admin@company.com'.
+            password:      Legacy admin password.
+            api_key:       Legacy API key from ZIA Admin Portal.
+            auth_mode:     'oneapi' for Zidentity OAuth, otherwise 'legacy'.
+            client_id:     OneAPI client ID.
+            client_secret: OneAPI client secret.
+            vanity_domain: OneAPI vanity domain, without '.zslogin.net'.
+            oneapi_cloud:  Optional OneAPI cloud name, e.g. 'beta'.
+            partner_id:    Optional OneAPI partner ID header value.
         """
-        self.base = f"https://{cloud}/api/v1"
+        self.auth_mode = (auth_mode or AUTH_MODE_LEGACY).strip().lower()
+        if self.auth_mode in ("oauth", "oauth2", "zidentity"):
+            self.auth_mode = AUTH_MODE_ONEAPI
+        if self.auth_mode not in (AUTH_MODE_ONEAPI, AUTH_MODE_LEGACY):
+            raise ValueError("auth_mode must be 'oneapi' or 'legacy'")
+
+        self.cloud = cloud
         self.username = username
         self.password = password
         self.api_key = api_key
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.vanity_domain = _clean_vanity_domain(vanity_domain)
+        self.oneapi_cloud = _normalise_oneapi_cloud(oneapi_cloud)
+        self.partner_id = partner_id
+        self._access_token = None
+        self._token_expires_at = 0.0
+
+        if self.auth_mode == AUTH_MODE_ONEAPI:
+            self.base = _oneapi_api_base(self.oneapi_cloud)
+        else:
+            self.base = f"https://{cloud}/api/v1"
+
         self.jar = http.cookiejar.CookieJar()
         self.opener = urllib.request.build_opener(
             urllib.request.HTTPCookieProcessor(self.jar)
         )
         self._authenticated = False
 
+    @classmethod
+    def from_config(cls, tenant_cfg: dict) -> "ZIAClient":
+        """Build a client from a tenant block in config.json."""
+        auth_mode = (tenant_cfg.get("auth_mode") or AUTH_MODE_LEGACY).strip().lower()
+        if auth_mode in ("oauth", "oauth2", "zidentity", AUTH_MODE_ONEAPI):
+            return cls(
+                auth_mode=AUTH_MODE_ONEAPI,
+                client_id=_config_value(tenant_cfg, "client_id", "clientId"),
+                client_secret=_config_value(tenant_cfg, "client_secret", "clientSecret"),
+                vanity_domain=_config_value(tenant_cfg, "vanity_domain", "vanityDomain"),
+                oneapi_cloud=_config_value(tenant_cfg, "oneapi_cloud", "cloud"),
+                partner_id=_config_value(tenant_cfg, "partner_id", "partnerId"),
+            )
+        return cls(
+            tenant_cfg.get("cloud", ""),
+            tenant_cfg.get("username", ""),
+            tenant_cfg.get("password", ""),
+            tenant_cfg.get("api_key", ""),
+            auth_mode=AUTH_MODE_LEGACY,
+        )
+
     def authenticate(self):
+        """Authenticate with OneAPI OAuth or the legacy ZIA session endpoint."""
+        if self.auth_mode == AUTH_MODE_ONEAPI:
+            return self._authenticate_oneapi()
+        return self._authenticate_legacy()
+
+    def _authenticate_legacy(self):
         """Authenticate against the ZIA API and store the session cookie.
 
         Calls POST /authenticatedSession with the obfuscated API key and
@@ -90,6 +212,61 @@ class ZIAClient:
         self._authenticated = True
         return resp
 
+    def _authenticate_oneapi(self):
+        """Authenticate against OneAPI/Zidentity with client credentials."""
+        if self._access_token and time.time() < (self._token_expires_at - 60):
+            self._authenticated = True
+            return {"access_token": self._access_token, "expires_at": self._token_expires_at}
+
+        missing = [
+            name for name, value in (
+                ("client_id", self.client_id),
+                ("client_secret", self.client_secret),
+                ("vanity_domain", self.vanity_domain),
+            )
+            if not value
+        ]
+        if missing:
+            raise RuntimeError(f"OneAPI config is missing: {', '.join(missing)}")
+
+        payload = urllib.parse.urlencode({
+            "grant_type": "client_credentials",
+            "client_id": self.client_id,
+            "client_secret": self.client_secret,
+            "audience": "https://api.zscaler.com",
+        }).encode()
+        req = urllib.request.Request(
+            _oneapi_token_url(self.vanity_domain, self.oneapi_cloud),
+            data=payload,
+            method="POST",
+        )
+        req.add_header("Accept", "application/json")
+        req.add_header("Content-Type", "application/x-www-form-urlencoded")
+        try:
+            with self.opener.open(req) as r:
+                raw = r.read()
+                resp = json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as e:
+            raise RuntimeError(f"OneAPI auth failed {e.code}: {e.read().decode()[:300]}")
+        token = resp.get("access_token")
+        if not token:
+            raise RuntimeError("OneAPI auth failed: token response did not contain access_token")
+        expires_in = int(resp.get("expires_in", 3600))
+        self._access_token = token
+        self._token_expires_at = time.time() + expires_in
+        self._authenticated = True
+        return resp
+
+    def _add_auth_headers(self, req: urllib.request.Request):
+        """Attach OneAPI authorization headers when OAuth is in use."""
+        if self.auth_mode != AUTH_MODE_ONEAPI:
+            return
+        if not self._access_token or time.time() >= (self._token_expires_at - 60):
+            self.authenticate()
+        req.add_header("Authorization", f"Bearer {self._access_token}")
+        if self.partner_id:
+            req.add_header("x-partner-id", self.partner_id)
+
     def _request(self, method: str, path: str, body=None,
                  _retries: int = 3) -> dict | list | None:
         """Send an authenticated HTTP request and return the parsed JSON response.
@@ -116,12 +293,18 @@ class ZIAClient:
         data = json.dumps(body).encode() if body is not None else None
         req = urllib.request.Request(url, data=data, method=method)
         req.add_header("Content-Type", "application/json")
+        self._add_auth_headers(req)
         try:
             with self.opener.open(req) as r:
                 raw = r.read()
                 return json.loads(raw) if raw else None
         except urllib.error.HTTPError as e:
             body_txt = e.read().decode()
+            if e.code == 401 and self.auth_mode == AUTH_MODE_ONEAPI and _retries > 0:
+                self._authenticated = False
+                self._access_token = None
+                self.authenticate()
+                return self._request(method, path, body, _retries - 1)
             if e.code == 429 and _retries > 0:
                 # Rate limited — back off and retry
                 wait = 2 ** (4 - _retries)  # 2s, 4s, 8s
@@ -142,6 +325,7 @@ class ZIAClient:
         data = json.dumps(body).encode() if body is not None else None
         req = urllib.request.Request(url, data=data, method=method)
         req.add_header("Content-Type", "application/json")
+        self._add_auth_headers(req)
         for name, value in (headers or {}).items():
             req.add_header(name, value)
         try:
@@ -153,6 +337,11 @@ class ZIAClient:
                 }
         except urllib.error.HTTPError as e:
             body_txt = e.read().decode(errors="replace")
+            if e.code == 401 and self.auth_mode == AUTH_MODE_ONEAPI and _retries > 0:
+                self._authenticated = False
+                self._access_token = None
+                self.authenticate()
+                return self._request_raw(method, path, body, headers, _retries - 1)
             if e.code == 429 and _retries > 0:
                 wait = 2 ** (4 - _retries)
                 time.sleep(wait)
@@ -243,12 +432,19 @@ class ZIAClient:
         return self._request("POST", "/status/activate")
 
     def logout(self):
-        """End the authenticated session by deleting the session cookie server-side.
+        """End the legacy session or clear the cached OneAPI access token.
 
         Safe to call even if not authenticated or if the server returns an error —
         exceptions are silently swallowed. Always call this in a finally block to
         avoid leaving stale sessions open.
         """
+        if self.auth_mode == AUTH_MODE_ONEAPI:
+            self._access_token = None
+            self._token_expires_at = 0.0
+            self._authenticated = False
+            return
+        if not self._authenticated:
+            return
         try:
             self._request("DELETE", "/authenticatedSession")
         except Exception:
