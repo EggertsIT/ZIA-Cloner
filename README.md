@@ -139,12 +139,22 @@ The inventory report is written to `backups/full_report.html`. Secret-looking
 fields such as passwords, tokens, API keys, private keys, and pre-shared keys are
 redacted in the HTML output.
 
+For endpoint-level implementation status, see
+[`API_COVERAGE_MATRIX.md`](API_COVERAGE_MATRIX.md). It is generated from
+`resources.py` and compares the tool against the official SDK ZIA endpoint
+surface when a local SDK checkout is available:
+
+```bash
+python3 tools/generate_api_coverage.py
+```
+
 ---
 
 ## Files
 
 ```
 sync.py              ← Only file you need to run
+API_COVERAGE_MATRIX.md ← Endpoint-by-endpoint API coverage matrix
 config.json          ← Tenant credentials (created by setup wizard)
 MIGRATION_GUIDE.md   ← Detailed reference: what's syncable, pre/post checklist
 backups/
@@ -166,6 +176,8 @@ config_manager.py    ← Setup wizard, config read/write
 scheduler.py         ← Cron integration
 report_gen.py        ← HTML report generator
 ui.py                ← Terminal colors and prompts
+tools/generate_api_coverage.py
+                     ← Regenerates the API coverage matrix
 ```
 
 ---
