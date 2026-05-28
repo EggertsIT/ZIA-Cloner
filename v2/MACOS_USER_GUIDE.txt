@@ -1,0 +1,91 @@
+ZIA Backup & Restore for macOS
+==============================
+
+How to run it
+-------------
+
+1. Open this folder.
+2. Double-click ZIA-Backup-Restore.app.
+3. Enter your Zscaler tenant details.
+4. Click Save Config.
+5. Click Test Source and Test Target.
+6. Run Dry Run first.
+7. Review the generated report.
+8. Only then click Apply Sync.
+
+You do not need to install Python.
+
+If macOS warns that the app is from an unidentified developer, Control-click
+ZIA-Backup-Restore.app, choose Open, then confirm Open. This build is not
+notarized by Apple.
+
+
+Where files are saved
+---------------------
+
+The macOS app saves its files here:
+
+~/Library/Application Support/ZIA Backup Restore
+
+- config.json: your saved tenant settings and credentials
+- backups: tenant backups, logs, and generated reports
+
+Secret values in config.json are stored in the current user's macOS Keychain.
+The config file only keeps Keychain references for those fields.
+
+Protected secrets can only be read by the same macOS user account that saved
+them. Still keep the data folder private because backups and reports may
+contain tenant information.
+
+If you move the app or data to another Mac or another user account, enter the
+tenant secrets again and click Save Config.
+
+The app skips slow read-only inventory by default. Enable Include slow read-only
+inventory only when you need reference-only items such as network applications;
+that endpoint can take several minutes on large tenants.
+
+
+Recommended first run
+---------------------
+
+For a single tenant inventory report:
+
+1. Check Report only.
+2. Fill in the Source / report tenant section.
+3. Click Save Config.
+4. Click Test Source.
+5. Click Full Report.
+
+For tenant migration or sync:
+
+1. Leave Report only unchecked.
+2. Fill in Source / report tenant.
+3. Fill in Target tenant.
+4. Click Save Config.
+5. Click Test Source.
+6. Click Test Target.
+7. Click Dry Run.
+8. Review the report carefully.
+9. Click Apply Sync only when you are ready to change the target tenant.
+
+
+Restore from a saved backup
+---------------------------
+
+Restore lets you choose a saved source backup JSON file and applies it to the
+configured target tenant.
+
+1. Click Backup to create or refresh a source backup.
+2. Click Restore Preview and choose the backup JSON.
+3. Review the report carefully.
+4. Click Restore Backup only when you are ready to change the target tenant.
+
+
+Troubleshooting
+---------------
+
+If a connection test fails, check the tenant credentials, vanity domain, cloud,
+and API permissions in Zscaler before running sync.
+
+Use Open Data Folder in the app to inspect config.json, backups, logs, and
+generated reports.

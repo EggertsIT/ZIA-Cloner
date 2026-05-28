@@ -1,0 +1,87 @@
+ZIA Backup & Restore
+====================
+
+How to run it
+-------------
+
+1. Open this folder.
+2. Double-click ZIA-Backup-Restore.exe.
+3. Enter your Zscaler tenant details.
+4. Click Save Config.
+5. Click Test Source and Test Target.
+6. Run Dry Run first.
+7. Review the generated report.
+8. Only then click Apply Sync.
+
+You do not need to install Python.
+
+
+Where files are saved
+---------------------
+
+ZIA-Backup-Restore.exe saves its files in the same folder as the app:
+
+- config.json: your saved tenant settings and credentials
+- backups: tenant backups, logs, and generated reports
+
+Secret values in config.json are protected by the operating system:
+
+- Windows: Windows user-level encryption
+- macOS: the user's Keychain
+
+They can only be decrypted by the same OS user account that saved them. Still
+keep this folder private because backups and reports may contain tenant
+information.
+
+If you move the app to another computer or another user account, enter the
+tenant secrets again and click Save Config.
+
+The app skips slow read-only inventory by default. Enable Include slow read-only
+inventory only when you need reference-only items such as network applications;
+that endpoint can take several minutes on large tenants.
+
+
+Recommended first run
+---------------------
+
+For a single tenant inventory report:
+
+1. Check Report only.
+2. Fill in the Source / report tenant section.
+3. Click Save Config.
+4. Click Test Source.
+5. Click Full Report.
+
+For tenant migration or sync:
+
+1. Leave Report only unchecked.
+2. Fill in Source / report tenant.
+3. Fill in Target tenant.
+4. Click Save Config.
+5. Click Test Source.
+6. Click Test Target.
+7. Click Dry Run.
+8. Review the report carefully.
+9. Click Apply Sync only when you are ready to change the target tenant.
+
+
+Restore from a saved backup
+---------------------------
+
+Restore uses the latest source backup file in backups/tenant_a.json and applies
+it to the configured target tenant.
+
+1. Click Backup to create or refresh backups/tenant_a.json.
+2. Click Restore Preview.
+3. Review the report carefully.
+4. Click Restore Backup only when you are ready to change the target tenant.
+
+
+Troubleshooting
+---------------
+
+If Windows SmartScreen warns you about the app, it is because this is a custom
+unsigned executable. Click More info, then Run anyway, if you trust the source.
+
+If a connection test fails, check the tenant credentials, vanity domain, cloud,
+and API permissions in Zscaler before running sync.

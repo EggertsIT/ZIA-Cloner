@@ -1,0 +1,36 @@
+{
+  "tenant_a": {
+    "label": "Source Tenant",
+    "auth_mode": "oneapi",
+    "oneapi_cloud": "production",
+    "client_id": "your-zidentity-client-id",
+    "client_secret": "your-zidentity-client-secret",
+    "vanity_domain": "your-vanity-domain",
+    "partner_id": "",
+    "cloud": "",
+    "username": "",
+    "password": "",
+    "api_key": ""
+  },
+  "tenant_b": {
+    "label": "Target Tenant",
+    "auth_mode": "oneapi",
+    "oneapi_cloud": "production",
+    "client_id": "your-zidentity-client-id",
+    "client_secret": "your-zidentity-client-secret",
+    "vanity_domain": "your-vanity-domain",
+    "partner_id": "",
+    "cloud": "",
+    "username": "",
+    "password": "",
+    "api_key": ""
+  },
+  "sync": {
+    "report_only": false,
+    "dry_run_default": false,
+    "auto_activate": true,
+    "no_delete": false,
+    "schedule_cron": "",
+    "sync_sensitive": false
+  }
+}
