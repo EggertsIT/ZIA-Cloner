@@ -430,7 +430,7 @@ def gen_report(diff: dict, src_backup: dict, result: dict | None,
 </body></html>"""
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(html)
+    out_path.write_text(html, encoding="utf-8")
     return out_path
 
 
@@ -446,6 +446,8 @@ def gen_full_report(backups: list[dict] | dict, out_path: Path):
         backups = [backups]
 
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    asset_dir = out_path.with_name(f"{out_path.stem}_files")
+    asset_dir.mkdir(parents=True, exist_ok=True)
     tenant_sections = []
     tenant_nav = []
     overview_rows = []
@@ -475,13 +477,23 @@ def gen_full_report(backups: list[dict] | dict, out_path: Path):
             "</tr>"
         )
 
-        resource_links = []
-        resource_sections = []
+        resource_rows = []
         for key in RESOURCES:
-            resource_links.append(
-                f'<a href="#tenant-{tenant_idx}-{_slug(key)}">{_esc(key)}</a>'
+            data = resources.get(key)
+            error = errors.get(key)
+            count = _count(data)
+            page_name = f"tenant-{tenant_idx}-{_slug(key)}.html"
+            _write_resource_report_page(asset_dir / page_name, tenant_idx, key, backup, generated)
+            status = badge("error", "d") if error else badge("ok", "ok") if data is not None else '<span class="zero">no data</span>'
+            resource_rows.append(
+                "<tr>"
+                f"<td><strong>{_esc(key)}</strong></td>"
+                f"<td>{count}</td>"
+                f"<td>{status}</td>"
+                f"<td class=\"meta\">{_esc(RESOURCES[key].get('endpoint', ''))}</td>"
+                f"<td><a href=\"{_esc(out_path.stem + '_files/' + page_name)}\">Open details</a></td>"
+                "</tr>"
             )
-            resource_sections.append(_render_resource_section(tenant_idx, key, backup))
 
         tenant_sections.append(f"""
 <h2 id="{tenant_id}">{_esc(label)}</h2>
@@ -492,9 +504,11 @@ def gen_full_report(backups: list[dict] | dict, out_path: Path):
     <div class="stat"><span class="meta">Backup errors</span><strong>{failed}</strong></div>
   </div>
   <p class="meta">Cloud: <code>{_esc(cloud)}</code> &nbsp;|&nbsp; Backup: {_esc(timestamp)}</p>
-  <p class="nav">{''.join(resource_links)}</p>
+  <table>
+    <tr><th>Resource</th><th>Items</th><th>Status</th><th>Endpoint</th><th>Details</th></tr>
+    {''.join(resource_rows)}
+  </table>
 </div>
-{''.join(resource_sections)}
 """)
 
     html = f"""<!DOCTYPE html>
@@ -508,7 +522,7 @@ def gen_full_report(backups: list[dict] | dict, out_path: Path):
 <p class="meta">Generated: {generated}</p>
 
 <div class="card">
-  <p class="meta">This inventory report contains every resource returned by the configured ZIA API backup endpoints. Fields that look like passwords, tokens, API keys, private keys, or pre-shared keys are redacted in this HTML output.</p>
+  <p class="meta">This inventory report keeps the index page small and writes full resource details into linked pages beside this file. Fields that look like passwords, tokens, API keys, private keys, or pre-shared keys are redacted in the HTML output.</p>
   <p class="nav">{''.join(tenant_nav)}</p>
   <table>
     <tr><th>Tenant</th><th>Cloud</th><th>Fetched</th><th>Objects/settings</th><th>Errors</th><th>Backup time</th></tr>
@@ -520,5 +534,55 @@ def gen_full_report(backups: list[dict] | dict, out_path: Path):
 </body></html>"""
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(html)
+    out_path.write_text(html, encoding="utf-8")
     return out_path
+
+
+def _write_resource_report_page(out_path: Path, tenant_idx: int, resource_key: str,
+                                backup: dict, generated: str):
+    """Write one full resource detail page for the full inventory report."""
+    meta = RESOURCES.get(resource_key, {})
+    tenant_meta = backup.get("meta", {})
+    label = tenant_meta.get("label") or f"Tenant {tenant_idx}"
+    data = backup.get("resources", {}).get(resource_key)
+    error = backup.get("errors", {}).get(resource_key)
+    count = _count(data)
+
+    if error:
+        body = f'<div class="errbox">{_esc(error)}</div>'
+    elif data is None:
+        body = '<p class="meta">No data was returned for this endpoint.</p>'
+    elif isinstance(data, list):
+        preview_items = data[:100]
+        body = [
+            f'<p class="meta">Showing a preview of {len(preview_items)} of {len(data)} item(s). The full redacted JSON is below.</p>',
+            _render_list(resource_key, preview_items),
+            "<details><summary>Full redacted JSON</summary>",
+            _safe_json(data),
+            "</details>",
+        ]
+        body = "\n".join(body)
+    elif isinstance(data, dict):
+        body = _render_object_table(data) + "\n<details><summary>Full redacted JSON</summary>" + _safe_json(data) + "</details>"
+    else:
+        body = _preview(data, limit=2000)
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8">
+<title>{_esc(label)} — {_esc(resource_key)}</title>
+<style>{CSS}</style>
+</head>
+<body>
+<p class="meta"><a href="../full_report.html">← Back to full report index</a></p>
+<h1>{_esc(resource_key)}</h1>
+<div class="card">
+  <p><strong>{_esc(label)}</strong></p>
+  <p class="meta">Generated: {generated}</p>
+  <p class="meta">Endpoint: <code>{_esc(meta.get("method", "GET"))} {_esc(meta.get("endpoint", ""))}</code></p>
+  <p class="meta">Items/settings: {count}</p>
+  {f'<p class="warn">{_esc(meta.get("notes", ""))}</p>' if meta.get("notes") else ""}
+</div>
+{body}
+</body></html>"""
+    out_path.write_text(html, encoding="utf-8")

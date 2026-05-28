@@ -12,6 +12,7 @@ import urllib.request
 
 AUTH_MODE_LEGACY = "legacy"
 AUTH_MODE_ONEAPI = "oneapi"
+USER_AGENT = "ZIA-Backup-Restore/1.0"
 
 
 def obfuscate_api_key(api_key: str, timestamp: int) -> str:
@@ -30,6 +31,9 @@ def obfuscate_api_key(api_key: str, timestamp: int) -> str:
     The same timestamp must be sent in the JSON payload so the server can
     validate the derived key.
     """
+    api_key = _clean_api_key(api_key)
+    if len(api_key) < 12:
+        raise ValueError("Legacy API key must be at least 12 characters long.")
     high = str(timestamp)[-6:]
     low = str(int(high) >> 1).zfill(6)
     key = ""
@@ -38,6 +42,29 @@ def obfuscate_api_key(api_key: str, timestamp: int) -> str:
     for c in low:
         key += api_key[int(c) + 2]
     return key
+
+
+def legacy_obfuscation_debug(api_key: str, timestamp: int) -> dict:
+    """Return non-secret details for comparing legacy API key obfuscation."""
+    clean_key = _clean_api_key(api_key)
+    high = str(timestamp)[-6:]
+    low = str(int(high) >> 1).zfill(6)
+    obfuscated = obfuscate_api_key(clean_key, timestamp)
+    return {
+        "timestamp": timestamp,
+        "high": high,
+        "low": low,
+        "api_key_length": len(clean_key),
+        "obfuscated_length": len(obfuscated),
+    }
+
+
+def _clean_api_key(api_key: str) -> str:
+    """Trim whitespace and accidental surrounding quotes from a legacy API key."""
+    value = (api_key or "").strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        value = value[1:-1].strip()
+    return value
 
 
 def _clean_vanity_domain(vanity_domain: str) -> str:
@@ -66,6 +93,29 @@ def _normalise_oneapi_cloud(cloud: str) -> str:
     if value.startswith("zsapi.") and value.endswith(".net"):
         return value[len("zsapi.") : -len(".net")]
     return value
+
+
+def _normalise_legacy_cloud(cloud: str) -> str:
+    """Accept a legacy cloud hostname or pasted URL and return only the host."""
+    value = (cloud or "").strip().lower()
+    value = value.removeprefix("https://").removeprefix("http://").strip("/")
+    if "/" in value:
+        value = value.split("/", 1)[0]
+    aliases = {
+        "zscaler": "zsapi.zscaler.net",
+        "zscloud": "zsapi.zscloud.net",
+        "zscalerone": "zsapi.zscalerone.net",
+        "zscalertwo": "zsapi.zscalertwo.net",
+        "zscalerthree": "zsapi.zscalerthree.net",
+        "zscalerbeta": "zsapi.zscalerbeta.net",
+        "zscalergov": "zsapi.zscalergov.net",
+    }
+    return aliases.get(value, value)
+
+
+def normalise_legacy_cloud(cloud: str) -> str:
+    """Public wrapper used by config/UI code to store canonical legacy hosts."""
+    return _normalise_legacy_cloud(cloud)
 
 
 def _oneapi_api_base(cloud: str) -> str:
@@ -130,10 +180,10 @@ class ZIAClient:
         if self.auth_mode not in (AUTH_MODE_ONEAPI, AUTH_MODE_LEGACY):
             raise ValueError("auth_mode must be 'oneapi' or 'legacy'")
 
-        self.cloud = cloud
+        self.cloud = _normalise_legacy_cloud(cloud)
         self.username = username
         self.password = password
-        self.api_key = api_key
+        self.api_key = _clean_api_key(api_key)
         self.client_id = client_id
         self.client_secret = client_secret
         self.vanity_domain = _clean_vanity_domain(vanity_domain)
@@ -145,7 +195,7 @@ class ZIAClient:
         if self.auth_mode == AUTH_MODE_ONEAPI:
             self.base = _oneapi_api_base(self.oneapi_cloud)
         else:
-            self.base = f"https://{cloud}/api/v1"
+            self.base = f"https://{self.cloud}/api/v1"
 
         self.jar = http.cookiejar.CookieJar()
         self.opener = urllib.request.build_opener(
@@ -167,10 +217,10 @@ class ZIAClient:
                 partner_id=_config_value(tenant_cfg, "partner_id", "partnerId"),
             )
         return cls(
-            tenant_cfg.get("cloud", ""),
-            tenant_cfg.get("username", ""),
-            tenant_cfg.get("password", ""),
-            tenant_cfg.get("api_key", ""),
+            _config_value(tenant_cfg, "cloud", "zia_cloud", "ziaCloud"),
+            _config_value(tenant_cfg, "username", "userName"),
+            _config_value(tenant_cfg, "password"),
+            _config_value(tenant_cfg, "api_key", "apiKey"),
             auth_mode=AUTH_MODE_LEGACY,
         )
 
@@ -193,6 +243,23 @@ class ZIAClient:
                           HTTP status code and response body in the message.
         """
         timestamp = int(time.time() * 1000)
+        missing = [
+            name for name, value in (
+                ("cloud", self.cloud),
+                ("username", self.username),
+                ("password", self.password),
+                ("api_key", self.api_key),
+            )
+            if not value
+        ]
+        if missing:
+            raise RuntimeError(f"Legacy config is missing: {', '.join(missing)}")
+        debug = legacy_obfuscation_debug(self.api_key, timestamp)
+        print(
+            "  Legacy key obfuscation: "
+            f"timestamp={debug['timestamp']} high={debug['high']} low={debug['low']} "
+            f"api_key_length={debug['api_key_length']} obfuscated_length={debug['obfuscated_length']}"
+        )
         obf_key = obfuscate_api_key(self.api_key, timestamp)
         payload = json.dumps({
             "username": self.username,
@@ -204,11 +271,20 @@ class ZIAClient:
             f"{self.base}/authenticatedSession", data=payload, method="POST"
         )
         req.add_header("Content-Type", "application/json")
+        req.add_header("Cache-Control", "no-cache")
+        req.add_header("User-Agent", USER_AGENT)
         try:
             with self.opener.open(req) as r:
                 resp = json.loads(r.read())
         except urllib.error.HTTPError as e:
-            raise RuntimeError(f"Auth failed {e.code}: {e.read().decode()[:300]}")
+            body = e.read().decode(errors="replace")
+            hint = ""
+            if e.code == 406:
+                hint = (
+                    " Legacy ZIA returned 406. Check that the API key is the Cloud Service API key "
+                    "for this exact cloud and that legacy API access is enabled for the tenant."
+                )
+            raise RuntimeError(f"Auth failed {e.code}:{hint} {body[:700]}")
         self._authenticated = True
         return resp
 
@@ -292,7 +368,9 @@ class ZIAClient:
         url = f"{self.base}/{path.lstrip('/')}"
         data = json.dumps(body).encode() if body is not None else None
         req = urllib.request.Request(url, data=data, method=method)
+        req.add_header("Accept", "application/json")
         req.add_header("Content-Type", "application/json")
+        req.add_header("User-Agent", USER_AGENT)
         self._add_auth_headers(req)
         try:
             with self.opener.open(req) as r:
@@ -324,7 +402,9 @@ class ZIAClient:
         url = f"{self.base}/{path.lstrip('/')}"
         data = json.dumps(body).encode() if body is not None else None
         req = urllib.request.Request(url, data=data, method=method)
+        req.add_header("Accept", "application/json")
         req.add_header("Content-Type", "application/json")
+        req.add_header("User-Agent", USER_AGENT)
         self._add_auth_headers(req)
         for name, value in (headers or {}).items():
             req.add_header(name, value)
@@ -385,7 +465,7 @@ class ZIAClient:
         """Send a DELETE request to remove a resource by its full path including ID."""
         self._request("DELETE", path)
 
-    def get_paginated(self, path: str, page_size: int = 1000) -> list:
+    def get_paginated(self, path: str, page_size: int = 1000, max_pages: int = 100) -> list:
         """Fetch all pages from a paginated list endpoint and return the combined list.
 
         Sends GET requests with pageSize and page parameters, incrementing the page
@@ -399,7 +479,8 @@ class ZIAClient:
         """
         results = []
         page = 1
-        while True:
+        seen_pages = set()
+        while page <= max_pages:
             sep = "&" if "?" in path else "?"
             data = self._request("GET", f"{path}{sep}pageSize={page_size}&page={page}")
             if not data:
@@ -407,19 +488,39 @@ class ZIAClient:
             if isinstance(data, list):
                 if not data:
                     break
+                page_signature = json.dumps(data[:3], sort_keys=True, default=str)
+                if page_signature in seen_pages:
+                    print(f"  Pagination stopped for {path}: repeated page data at page {page}.")
+                    break
+                seen_pages.add(page_signature)
                 results.extend(data)
+                if len(data) > page_size:
+                    print(f"  Pagination stopped for {path}: endpoint returned {len(data)} items in one response.")
+                    break
                 if len(data) < page_size:
                     break
                 page += 1
             elif isinstance(data, dict):
                 # some endpoints wrap in a list key
                 items = data.get("list", data.get("urlCategories", []))
+                if not isinstance(items, list):
+                    break
+                page_signature = json.dumps(items[:3], sort_keys=True, default=str)
+                if page_signature in seen_pages:
+                    print(f"  Pagination stopped for {path}: repeated page data at page {page}.")
+                    break
+                seen_pages.add(page_signature)
                 results.extend(items)
+                if len(items) > page_size:
+                    print(f"  Pagination stopped for {path}: endpoint returned {len(items)} items in one response.")
+                    break
                 if len(items) < page_size:
                     break
                 page += 1
             else:
                 break
+        if page > max_pages:
+            print(f"  Pagination stopped for {path}: reached {max_pages} pages.")
         return results
 
     def activate(self) -> dict:

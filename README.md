@@ -1,4 +1,4 @@
-# ZIA Sync Tool
+# ZIA Backup & Restore
 
 Synchronizes settings between two Zscaler Internet Access (ZIA) tenants, or
 generates a full single-tenant inventory report. New setups use OneAPI
@@ -19,6 +19,47 @@ Backup → Diff → Report → Apply — one command, no technical knowledge req
 
 ## Quick Start
 
+### Desktop app
+
+You can run ZIA Backup & Restore with a simple desktop GUI:
+
+```powershell
+python zia_cloner_app.py
+```
+
+To build a single-file Windows executable on Windows:
+
+```powershell
+.\build_windows.ps1
+```
+
+The executable is created at `dist\ZIA-Backup-Restore.exe`, and a shareable zip
+is created at `dist\ZIA-Backup-Restore-Windows.zip`. End users can unzip that
+file and double-click `ZIA-Backup-Restore.exe`; they do not need to install
+Python. When running as an `.exe`, `config.json`, backups, logs, and reports are
+stored beside the executable. Secret fields in `config.json` are protected with
+Windows DPAPI for the current Windows user.
+
+To build a macOS app bundle on macOS:
+
+```bash
+./build_macos.sh
+```
+
+The app bundle is created at `dist/ZIA-Backup-Restore.app`, and a shareable zip
+is created at `dist/ZIA-Backup-Restore-macOS.zip`. The macOS build script creates
+a local `.build-venv`, installs PyInstaller there, validates that the selected
+Python has Tk support, and ad-hoc signs the bundle when `codesign` is available.
+Use `PYTHON_BIN=/path/to/python3 ./build_macos.sh` if your default `python3`
+does not include tkinter. The app is built for the selected Python's CPU
+architecture; with a universal2-capable Python, you can request a universal
+bundle with `PYINSTALLER_TARGET_ARCH=universal2 ./build_macos.sh`.
+
+When running as a macOS `.app`, `config.json`, backups, logs, and reports are
+stored in `~/Library/Application Support/ZIA Backup Restore`. Secret fields in
+`config.json` are stored in the user's Keychain and the file only keeps Keychain
+references.
+
 ### Step 1 — First-time setup (2 minutes)
 
 ```bash
@@ -33,7 +74,24 @@ use.
 - OneAPI mode needs a Zidentity API Client ID, client secret, and vanity domain.
 - Legacy mode needs the old ZIA admin username, password, API key, and cloud.
 
-The wizard tests the connection and saves credentials locally to `config.json`.
+The wizard tests the connection and saves configuration locally to `config.json`.
+
+### Secret protection
+
+Saved tenant secrets are protected before they are written to `config.json`.
+Readable values such as client secrets, passwords, and API keys are not stored
+in plain text.
+
+- Windows uses DPAPI protection for the current Windows user.
+- macOS stores secrets in the current user's Keychain and keeps only references
+  in `config.json`.
+- Windows app data is stored beside the `.exe`; macOS app data is stored under
+  `~/Library/Application Support/ZIA Backup Restore`.
+
+Protected secrets are tied to the OS user account that saved them. If you move
+the app folder to another computer or another user account, re-enter the tenant
+secrets and click Save Config. Backups and reports can still contain tenant
+information, so keep the app folder private.
 
 ### Step 2 — Run a sync or report
 
@@ -49,6 +107,11 @@ In sync mode, the tool will:
 4. Apply all changes to the target tenant
 5. Activate and open an HTML report in your browser
 
+Slow read-only inventory endpoints, including `network_applications`, are
+skipped by default in the desktop app because they can take several minutes and
+are not required for restore/sync. Enable `Include slow read-only inventory` if
+you need those reference-only report sections.
+
 In report-only mode, `python3 sync.py` also generates a full inventory report for
 the configured tenant.
 
@@ -57,6 +120,17 @@ the configured tenant.
 ```bash
 python3 sync.py dry-run
 ```
+
+To restore from the latest saved source backup instead of reading the source
+tenant live again:
+
+```bash
+python3 sync.py restore-preview  # simulate restoring backups/tenant_a.json
+python3 sync.py restore          # apply that backup to the target tenant
+```
+
+In the desktop app, use `Restore Preview` first, review the report, then use
+`Restore Backup` only when you are ready to change the target tenant.
 
 ### Step 4 — Set up automatic sync (e.g. daily at 2 AM)
 
@@ -74,6 +148,9 @@ python3 sync.py backup [a|b|both]
 python3 sync.py report     # Open the latest sync/diff report in the browser
 python3 sync.py full-report [a|b|both]
                            # Generate a full API inventory report as HTML
+python3 sync.py restore-preview
+                           # Preview restoring backups/tenant_a.json into tenant B
+python3 sync.py restore    # Restore backups/tenant_a.json into tenant B
 python3 sync.py --auto     # Full sync, no prompts (used by cron)
 ```
 

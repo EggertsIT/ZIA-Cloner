@@ -5,9 +5,11 @@ import json
 from pathlib import Path
 
 import ui
-from zia_client import AUTH_MODE_LEGACY, AUTH_MODE_ONEAPI, ZIAClient
+from app_paths import APP_DIR
+from secret_store import protect_config, unprotect_config
+from zia_client import AUTH_MODE_LEGACY, AUTH_MODE_ONEAPI, ZIAClient, normalise_legacy_cloud
 
-CONFIG_PATH = Path(__file__).parent / "config.json"
+CONFIG_PATH = APP_DIR / "config.json"
 
 DEFAULT_CONFIG = {
     "tenant_a": {
@@ -43,6 +45,7 @@ DEFAULT_CONFIG = {
         "no_delete": False,
         "schedule_cron": "",
         "sync_sensitive": False,  # users, admin users, groups — off by default
+        "include_slow_readonly": False,
     },
 }
 
@@ -76,13 +79,15 @@ def load() -> dict:
     Returns an empty dict if the file does not exist (not yet configured).
     """
     if CONFIG_PATH.exists():
-        return json.loads(CONFIG_PATH.read_text())
+        return unprotect_config(json.loads(CONFIG_PATH.read_text()))
     return {}
 
 
 def save(cfg: dict):
     """Write the config dict to config.json as formatted JSON."""
-    CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
+    protected = protect_config(json.loads(json.dumps(cfg)))
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CONFIG_PATH.write_text(json.dumps(protected, indent=2), encoding="utf-8")
 
 
 def tenant_value(tenant: dict, *names: str) -> str:
@@ -111,7 +116,12 @@ def missing_auth_fields(tenant: dict) -> list[str]:
             ("vanity_domain", "vanityDomain"),
         ]
         return [names[0] for names in required if not tenant_value(tenant, *names)]
-    required = [("cloud",), ("username",), ("password",), ("api_key",)]
+    required = [
+        ("cloud", "zia_cloud", "ziaCloud"),
+        ("username", "userName"),
+        ("password",),
+        ("api_key", "apiKey"),
+    ]
     return [names[0] for names in required if not tenant_value(tenant, *names)]
 
 
@@ -145,12 +155,13 @@ def test_connection(label: str, tenant_cfg: dict) -> bool:
     print(f"\n  Testing connection to {label}...", end=" ", flush=True)
     try:
         client = ZIAClient.from_config(tenant_cfg)
+        print(f"\n  Auth mode: {client.auth_mode}; API: {client.base}", end=" ", flush=True)
         client.authenticate()
         client.logout()
         print(ui._c(ui.GRN, "✓ Connected"))
         return True
     except Exception as e:
-        print(ui._c(ui.RED, f"✗ Failed: {str(e)[:80]}"))
+        print(ui._c(ui.RED, f"✗ Failed: {str(e)[:1000]}"))
         return False
 
 
@@ -168,7 +179,7 @@ def _prompt_legacy_tenant(cfg: dict, key: str, label_default: str, prev: dict, r
         idx = int(cloud_in) - 1
         if 0 <= idx < len(KNOWN_CLOUDS):
             cloud_in = KNOWN_CLOUDS[idx]
-    cfg[key]["cloud"] = cloud_in or prev.get("cloud", "")
+    cfg[key]["cloud"] = normalise_legacy_cloud(cloud_in or prev.get("cloud", ""))
 
     cfg[key]["username"] = ui.ask("Admin username (e.g. admin@company.com)",
                                   default=prev.get("username", ""))
@@ -285,6 +296,10 @@ def setup_wizard(reconfigure: bool = False):
 
     if report_only:
         ui.section("Report Settings")
+        cfg["sync"]["include_slow_readonly"] = ui.confirm(
+            "Include slow read-only inventory endpoints? (network applications can take several minutes)",
+            default=False,
+        )
         ui.ok("Report-only mode enabled. Sync, dry-run, and schedule commands will stay disabled until you add a target tenant.")
         save(cfg)
         ui.ok(f"Config saved → {CONFIG_PATH}")
@@ -303,6 +318,10 @@ def setup_wizard(reconfigure: bool = False):
     print(f"  {ui._c(ui.DIM, 'Syncing them can lock people out or grant unintended access.')}")
     cfg["sync"]["sync_sensitive"] = ui.confirm(
         "Include users, admin users and groups in sync?", default=False)
+    cfg["sync"]["include_slow_readonly"] = ui.confirm(
+        "Include slow read-only inventory endpoints? (network applications can take several minutes)",
+        default=False,
+    )
 
     save(cfg)
     ui.ok(f"Config saved → {CONFIG_PATH}")

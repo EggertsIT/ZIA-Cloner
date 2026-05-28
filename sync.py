@@ -30,6 +30,7 @@ except ImportError:
     sys.exit(1)
 
 import ui
+from app_paths import APP_DIR
 from config_manager import (
     load as load_config,
     is_configured,
@@ -42,9 +43,15 @@ from config_manager import (
 from zia_client import ZIAClient
 from engine import backup_tenant, compute_diff, has_changes, print_diff_summary, apply_diff
 from report_gen import gen_report, gen_full_report
-from resources import MIGRATION_ORDER
+from rate_estimator import (
+    estimate_apply_counts,
+    estimate_backup_counts,
+    format_estimate,
+    merge_counts,
+)
+from resources import MIGRATION_ORDER, RESOURCES, SLOW_READ_ONLY_RESOURCES
 
-BACKUPS_DIR = Path(__file__).parent / "backups"
+BACKUPS_DIR = APP_DIR / "backups"
 BACKUP_A    = BACKUPS_DIR / "tenant_a.json"
 BACKUP_B    = BACKUPS_DIR / "tenant_b.json"
 DIFF_FILE   = BACKUPS_DIR / "diff.json"
@@ -89,7 +96,7 @@ def save_log(content: dict):
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     log_path = LOGS_DIR / f"sync_{ts}.json"
-    log_path.write_text(json.dumps(content, indent=2))
+    log_path.write_text(json.dumps(content, indent=2), encoding="utf-8")
     return log_path
 
 
@@ -99,6 +106,14 @@ def require_two_tenants(cfg: dict, command_name: str):
         ui.error(f"{command_name} requires a target tenant.")
         ui.info("Run `python3 sync.py setup` again and choose sync mode to add tenant B.")
         sys.exit(1)
+
+
+def print_rate_estimate(label: str, counts: dict[str, int]):
+    """Print estimated API call counts and minimum time."""
+    ui.section("API call estimate")
+    for line in format_estimate(label, counts):
+        ui.info(line)
+    ui.info("Estimate uses conservative defaults: GET 2/sec + 1000/hr, writes 1/sec + 400/hr.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -132,11 +147,23 @@ def cmd_backup(cfg: dict, which: str = "both"):
         ui.info("Run `python3 sync.py setup` and choose sync mode to add tenant B.")
         sys.exit(1)
 
+    tenant_count = 1 if which in ("a", "b") else 2
+    resource_count = len([
+        key for key in RESOURCES
+        if cfg.get("sync", {}).get("include_slow_readonly", False) or key not in SLOW_READ_ONLY_RESOURCES
+    ])
+    print_rate_estimate("Backup minimum", estimate_backup_counts(resource_count * tenant_count))
+
     if which in ("a", "both"):
         client_a = make_client(cfg["tenant_a"])
         try:
             client_a.authenticate()
-            backup_tenant(client_a, cfg["tenant_a"]["label"], BACKUP_A)
+            backup_tenant(
+                client_a,
+                cfg["tenant_a"]["label"],
+                BACKUP_A,
+                include_slow_readonly=cfg.get("sync", {}).get("include_slow_readonly", False),
+            )
         finally:
             client_a.logout()
 
@@ -144,7 +171,12 @@ def cmd_backup(cfg: dict, which: str = "both"):
         client_b = make_client(cfg["tenant_b"])
         try:
             client_b.authenticate()
-            backup_tenant(client_b, cfg["tenant_b"]["label"], BACKUP_B)
+            backup_tenant(
+                client_b,
+                cfg["tenant_b"]["label"],
+                BACKUP_B,
+                include_slow_readonly=cfg.get("sync", {}).get("include_slow_readonly", False),
+            )
         finally:
             client_b.logout()
 
@@ -161,10 +193,19 @@ def cmd_dry_run(cfg: dict):
 
     cmd_backup(cfg, "both")
 
-    src = json.loads(BACKUP_A.read_text())
-    tgt = json.loads(BACKUP_B.read_text()) if BACKUP_B.exists() else {"meta": {}, "resources": {}}
+    src = json.loads(BACKUP_A.read_text(encoding="utf-8"))
+    tgt = json.loads(BACKUP_B.read_text(encoding="utf-8")) if BACKUP_B.exists() else {"meta": {}, "resources": {}}
     diff = compute_diff(src, tgt)
-    DIFF_FILE.write_text(json.dumps(diff, indent=2))
+    DIFF_FILE.write_text(json.dumps(diff, indent=2), encoding="utf-8")
+    print_rate_estimate(
+        "Dry-run apply",
+        estimate_apply_counts(
+            diff,
+            no_delete=cfg["sync"].get("no_delete", False),
+            sync_sensitive=cfg["sync"].get("sync_sensitive", False),
+            include_activate=False,
+        ),
+    )
 
     if not has_changes(diff):
         ui.ok("Tenants are already in sync!")
@@ -186,6 +227,102 @@ def cmd_dry_run(cfg: dict):
     report_path = gen_report(diff, src, result, REPORT_FILE)
     ui.ok(f"Report → {report_path}")
     open_report(report_path)
+
+
+def _restore_from_backup(cfg: dict, dry_run: bool, backup_path: str | Path | None = None):
+    """Apply or preview the saved source backup against the configured target tenant."""
+    require_two_tenants(cfg, "restore")
+    source_backup = Path(backup_path) if backup_path else BACKUP_A
+    if not source_backup.exists():
+        ui.error(f"No source backup found at {source_backup}. Run Backup first or choose a backup JSON.")
+        sys.exit(1)
+
+    ui.header("ZIA Restore Preview" if dry_run else "ZIA Restore")
+    ui.info(f"Source backup → {source_backup}")
+    ui.info(f"Target tenant → {cfg['tenant_b']['label']}")
+
+    src = json.loads(source_backup.read_text(encoding="utf-8"))
+    if not isinstance(src, dict) or "resources" not in src:
+        raise RuntimeError(f"{source_backup} does not look like a ZIA backup JSON file.")
+
+    ui.section("Backing up current target")
+    client_b = make_client(cfg["tenant_b"])
+    try:
+        client_b.authenticate()
+        backup_tenant(
+            client_b,
+            cfg["tenant_b"]["label"],
+            BACKUP_B,
+            include_slow_readonly=cfg.get("sync", {}).get("include_slow_readonly", False),
+        )
+    finally:
+        client_b.logout()
+
+    tgt = json.loads(BACKUP_B.read_text(encoding="utf-8")) if BACKUP_B.exists() else {"meta": {}, "resources": {}}
+    diff = compute_diff(src, tgt)
+    DIFF_FILE.write_text(json.dumps(diff, indent=2), encoding="utf-8")
+    target_backup_count = len([
+        key for key in RESOURCES
+        if cfg.get("sync", {}).get("include_slow_readonly", False) or key not in SLOW_READ_ONLY_RESOURCES
+    ])
+    apply_counts = estimate_apply_counts(
+        diff,
+        no_delete=cfg["sync"].get("no_delete", False),
+        sync_sensitive=cfg["sync"].get("sync_sensitive", False),
+        include_activate=not dry_run and cfg["sync"].get("auto_activate", True),
+    )
+    print_rate_estimate(
+        "Restore preview" if dry_run else "Restore",
+        merge_counts(estimate_backup_counts(target_backup_count), apply_counts),
+    )
+
+    if not has_changes(diff):
+        ui.ok("Target already matches the selected backup.")
+        report_path = gen_report(diff, src, None, REPORT_FILE)
+        ui.ok(f"Report → {report_path}")
+        open_report(report_path)
+        return
+
+    print_diff_summary(diff)
+
+    ui.section("Restore simulation" if dry_run else "Restoring target")
+    client_b = make_client(cfg["tenant_b"])
+    try:
+        client_b.authenticate()
+        result = apply_diff(
+            client_b,
+            diff,
+            src,
+            dry_run=dry_run,
+            no_delete=cfg["sync"].get("no_delete", False),
+            sync_sensitive=cfg["sync"].get("sync_sensitive", False),
+        )
+        if not dry_run and cfg["sync"].get("auto_activate", True):
+            ui.section("Activating changes")
+            try:
+                client_b.activate()
+                ui.ok("Restored changes activated in target tenant.")
+            except Exception as e:
+                ui.warn(f"Activation failed: {e} — activate manually in ZIA console.")
+    finally:
+        client_b.logout()
+
+    log_path = save_log({"mode": "restore-preview" if dry_run else "restore", "diff_summary": diff.get("summary"), "result": result})
+    ui.info(f"Log saved → {log_path.name}")
+
+    report_path = gen_report(diff, src, result, REPORT_FILE)
+    ui.ok(f"Report → {report_path}")
+    open_report(report_path)
+
+
+def cmd_restore_preview(cfg: dict, backup_path: str | Path | None = None):
+    """Preview restoring the latest source backup into the configured target tenant."""
+    _restore_from_backup(cfg, dry_run=True, backup_path=backup_path)
+
+
+def cmd_restore(cfg: dict, backup_path: str | Path | None = None):
+    """Restore the latest source backup into the configured target tenant."""
+    _restore_from_backup(cfg, dry_run=False, backup_path=backup_path)
 
 
 def cmd_sync(cfg: dict, auto: bool = False):
@@ -214,10 +351,19 @@ def cmd_sync(cfg: dict, auto: bool = False):
     cmd_backup(cfg, "both")
 
     # ── Step 2: Diff ────────────────────────────────────────────────────────
-    src = json.loads(BACKUP_A.read_text())
-    tgt = json.loads(BACKUP_B.read_text()) if BACKUP_B.exists() else {"meta": {}, "resources": {}}
+    src = json.loads(BACKUP_A.read_text(encoding="utf-8"))
+    tgt = json.loads(BACKUP_B.read_text(encoding="utf-8")) if BACKUP_B.exists() else {"meta": {}, "resources": {}}
     diff = compute_diff(src, tgt)
-    DIFF_FILE.write_text(json.dumps(diff, indent=2))
+    DIFF_FILE.write_text(json.dumps(diff, indent=2), encoding="utf-8")
+    print_rate_estimate(
+        "Sync apply",
+        estimate_apply_counts(
+            diff,
+            no_delete=cfg["sync"].get("no_delete", False),
+            sync_sensitive=cfg["sync"].get("sync_sensitive", False),
+            include_activate=cfg["sync"].get("auto_activate", True),
+        ),
+    )
 
     if not has_changes(diff):
         ui.section("Result")
@@ -321,9 +467,9 @@ def cmd_full_report(cfg: dict, which: str = "both", open_browser: bool = True):
 
     backups = []
     if which in ("a", "both"):
-        backups.append(json.loads(BACKUP_A.read_text()))
+        backups.append(json.loads(BACKUP_A.read_text(encoding="utf-8")))
     if which in ("b", "both"):
-        backups.append(json.loads(BACKUP_B.read_text()))
+        backups.append(json.loads(BACKUP_B.read_text(encoding="utf-8")))
 
     report_path = gen_full_report(backups, FULL_REPORT_FILE)
     ui.ok(f"Full report → {report_path}")
@@ -393,6 +539,12 @@ def main():
 
     elif command == "dry-run":
         cmd_dry_run(cfg)
+
+    elif command in ("restore-preview", "restore-dry-run"):
+        cmd_restore_preview(cfg)
+
+    elif command == "restore":
+        cmd_restore(cfg)
 
     elif command == "report":
         cmd_report()

@@ -875,7 +875,7 @@ RESOURCES: dict[str, dict] = {
     ),
     "network_applications": report_only_resource(
         "networkApplications",
-        notes="Report-only: predefined cloud firewall network applications.",
+        notes="Report-only: predefined cloud firewall network applications. This endpoint can be slow and is skipped by default in the app.",
     ),
     "network_services_lite": report_only_resource(
         "networkServices/lite",
@@ -1211,3 +1211,4 @@ WRITABLE_RESOURCES  = [k for k in MIGRATION_ORDER if RESOURCES[k]["writable"]]
 SETTINGS_RESOURCES  = [k for k in MIGRATION_ORDER if RESOURCES[k].get("kind") == "settings"]
 LIST_RESOURCES      = [k for k in MIGRATION_ORDER if RESOURCES[k].get("kind") == "list"]
 READ_ONLY_RESOURCES = [k for k, v in RESOURCES.items() if not v["writable"]]
+SLOW_READ_ONLY_RESOURCES = {"network_applications"}

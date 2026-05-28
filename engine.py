@@ -14,7 +14,8 @@ from pathlib import Path
 import ui
 from zia_client import ZIAClient
 from resources import (RESOURCES, MIGRATION_ORDER, WRITABLE_RESOURCES,
-                        READ_ONLY_RESOURCES, SETTINGS_RESOURCES, LIST_RESOURCES, SYSTEM_FIELDS)
+                       READ_ONLY_RESOURCES, SETTINGS_RESOURCES, LIST_RESOURCES,
+                       SLOW_READ_ONLY_RESOURCES, SYSTEM_FIELDS)
 
 
 BACKUPS_DIR = Path(__file__).parent / "backups"
@@ -127,7 +128,7 @@ def _fetch_child_resource(client: ZIAClient, meta: dict, result: dict) -> list:
 # Backup
 # ─────────────────────────────────────────────────────────────────────────────
 
-def backup_tenant(client: ZIAClient, label: str, out_path: Path) -> dict:
+def backup_tenant(client: ZIAClient, label: str, out_path: Path, include_slow_readonly: bool = False) -> dict:
     """Download all configured ZIA resources from a tenant and save them to JSON.
 
     Iterates through every resource defined in RESOURCES in order, using a 0.4s
@@ -160,11 +161,22 @@ def backup_tenant(client: ZIAClient, label: str, out_path: Path) -> dict:
         },
         "resources": {},
         "errors": {},
+        "skipped": {},
     }
 
     for i, key in enumerate(all_keys, 1):
         meta = RESOURCES[key]
         ui.step(i, len(all_keys), key)
+        if key in SLOW_READ_ONLY_RESOURCES and not include_slow_readonly:
+            result["resources"][key] = None
+            result["skipped"][key] = "Slow read-only inventory; enable it in the app if needed."
+            ui.skip("slow read-only inventory disabled")
+            continue
+        if key in SLOW_READ_ONLY_RESOURCES:
+            print()
+            ui.info(f"{key} is read-only and can take several minutes on large tenants.")
+            ui.info("If it repeats pages, pagination protection will stop it before rate-limit runaway.")
+            ui.step(i, len(all_keys), key)
         time.sleep(0.4)  # avoid rate limiting (ZIA: 1-2 req/sec on some endpoints)
         try:
             kind = meta.get("kind", "list")
@@ -198,7 +210,7 @@ def backup_tenant(client: ZIAClient, label: str, out_path: Path) -> dict:
             ui.fail(str(e))
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(result, indent=2))
+    out_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
     ui.ok(f"Saved → {out_path.name}")
     return result
 
